@@ -1,2 +1,3 @@
 dataset/**
+!dataset/**/*.md
 **/__pycache__/
