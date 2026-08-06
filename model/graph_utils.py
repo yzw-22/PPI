@@ -7,11 +7,9 @@ PPI 图构建与查询工具。
 
 import csv
 import json
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-import numpy as np
 import pandas as pd
 import torch
 
@@ -39,9 +37,6 @@ class PPIGraph:
         self.adj_list = adj_list
         self.edge_feat = edge_feat
 
-    def get_neighbors(self, node: int) -> List[int]:
-        """返回某节点的所有邻居。"""
-        return self.adj_list[node]
 
     def get_edge_feat(self, a: int, b: int) -> Optional[torch.Tensor]:
         """获取边 (a, b) 的 7 维 multi-hot 特征。
@@ -69,43 +64,6 @@ class PPIGraph:
                 if neighbor not in subgraph:
                     frontier.add(neighbor)
         return list(frontier)
-
-    def aggregate_edge_features(
-        self,
-        neighbor: int,
-        subgraph: Set[int],
-        use_edge_features: bool = True,
-    ) -> torch.Tensor:
-        """聚合邻居节点与子图之间所有边的特征。
-
-        对于 multi-hot 标签，使用 **max pooling（逻辑 OR）** 聚合：
-        只要有任意一条边具有某关系，聚合结果中该位即为 1。
-
-        若 ``use_edge_features=False``，返回全 1 向量（二值连接指示器）。
-
-        Args:
-            neighbor: 邻居节点索引。
-            subgraph: 当前子图节点集合。
-            use_edge_features: 是否使用完整 multi-hot 特征。
-
-        Returns:
-            7 维 Tensor（dtype=float32）。
-        """
-        if not use_edge_features:
-            return torch.ones(7, dtype=torch.float32)
-
-        feats = []
-        for sub_node in subgraph:
-            feat = self.get_edge_feat(neighbor, sub_node)
-            if feat is not None:
-                feats.append(feat)
-
-        if not feats:
-            return torch.zeros(7, dtype=torch.float32)
-
-        stacked = torch.stack(feats)  # [K, 7]
-        aggregated = stacked.max(dim=0).values  # [7] — max pooling (OR)
-        return aggregated
 
 
 # ---------------------------------------------------------------------------

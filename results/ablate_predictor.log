@@ -1,0 +1,71 @@
+[ablate] 5 variants, 6 rounds, 600 samples/round, device=cuda
+
+===== Variant: baseline (256h/3l, residual=Truex1.0) =====
+  r 1: TestAUC=0.6336 F1macro=0.4784
+  r 2: TestAUC=0.6181 F1macro=0.4807
+  r 3: TestAUC=0.6237 F1macro=0.4808
+  r 4: TestAUC=0.6401 F1macro=0.4807
+  r 5: TestAUC=0.6404 F1macro=0.4807
+  r 6: TestAUC=0.6337 F1macro=0.4806
+  [diag] d_logits G0vsGt=0.0168 G0vsGrand=0.0123 GtvsGrand=0.0124
+  [diag] self-ablate pairwise=0.1154 logits=0.0169
+  [diag] layer residual ratios=0.952 0.578 0.445
+  [397s]
+
+===== Variant: hidden512 (512h/3l, residual=Truex1.0) =====
+  r 1: TestAUC=0.6424 F1macro=0.4523
+  r 2: TestAUC=0.6354 F1macro=0.4834
+  r 3: TestAUC=0.6358 F1macro=0.4807
+  r 4: TestAUC=0.6347 F1macro=0.4807
+  r 5: TestAUC=0.6112 F1macro=0.4848
+  r 6: TestAUC=0.6118 F1macro=0.4825
+  [diag] d_logits G0vsGt=0.0082 G0vsGrand=0.0071 GtvsGrand=0.0086
+  [diag] self-ablate pairwise=0.0558 logits=0.0082
+  [diag] layer residual ratios=0.972 0.590 0.421
+  [386s]
+
+===== Variant: layers5 (256h/5l, residual=Truex1.0) =====
+  r 1: TestAUC=0.5252 F1macro=0.4807
+  r 2: TestAUC=0.6166 F1macro=0.4807
+  r 3: TestAUC=0.6626 F1macro=0.4897
+  r 4: TestAUC=0.6359 F1macro=0.4839
+  r 5: TestAUC=0.6399 F1macro=0.4862
+  r 6: TestAUC=0.6403 F1macro=0.5042
+  [diag] d_logits G0vsGt=0.0071 G0vsGrand=0.0070 GtvsGrand=0.0077
+  [diag] self-ablate pairwise=0.0486 logits=0.0071
+  [diag] layer residual ratios=0.967 0.561 0.405 0.327 0.274
+  [468s]
+
+===== Variant: residual_x2 (256h/3l, residual=Truex2.0) =====
+  r 1: TestAUC=0.6486 F1macro=0.4807
+  r 2: TestAUC=0.6067 F1macro=0.4222
+  r 3: TestAUC=0.6158 F1macro=0.4807
+  r 4: TestAUC=0.6206 F1macro=0.4827
+  r 5: TestAUC=0.6387 F1macro=0.4814
+  r 6: TestAUC=0.6390 F1macro=0.4808
+  [diag] d_logits G0vsGt=0.0195 G0vsGrand=0.0166 GtvsGrand=0.0151
+  [diag] self-ablate pairwise=0.1074 logits=0.0195
+  [diag] layer residual ratios=0.980 0.377 0.257
+  [390s]
+
+===== Variant: no_residual (256h/3l, residual=Falsex1.0) =====
+  r 1: TestAUC=0.5953 F1macro=0.4805
+  r 2: TestAUC=0.6058 F1macro=0.4807
+  r 3: TestAUC=0.6104 F1macro=0.4807
+  r 4: TestAUC=0.6094 F1macro=0.4807
+  r 5: TestAUC=0.6180 F1macro=0.4807
+  r 6: TestAUC=0.6326 F1macro=0.4807
+  [diag] d_logits G0vsGt=0.0059 G0vsGrand=0.0060 GtvsGrand=0.0041
+  [diag] self-ablate pairwise=0.0479 logits=0.0059
+  [diag] layer residual ratios=0.996 1.024 1.045
+  [379s]
+
+[ablate] saved to results/ablate_predictor_results.json
+
+===== Summary (final round) =====
+       variant | TestAUCmi | TestAUCma |  F1macro | dG0-Gt | dSelfAbl
+      baseline |   0.6337 |   0.5728 |   0.4806 | 0.0168 |  0.0169
+     hidden512 |   0.6118 |   0.5902 |   0.4825 | 0.0082 |  0.0082
+       layers5 |   0.6403 |   0.6066 |   0.5042 | 0.0071 |  0.0071
+   residual_x2 |   0.6390 |   0.5835 |   0.4808 | 0.0195 |  0.0195
+   no_residual |   0.6326 |   0.5222 |   0.4807 | 0.0059 |  0.0059

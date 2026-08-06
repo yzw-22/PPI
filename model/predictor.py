@@ -5,7 +5,7 @@ GNN 预测器（PPIPredictor）。
 使用 GAT（Graph Attention Network）作为消息传递主干。
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -82,6 +82,7 @@ class PPIPredictor(nn.Module):
         graph: PPIGraph,
         subgraph_nodes: List[int],
         core_pair: Tuple[int, int],
+        edges: Optional[List[Tuple[int, int]]] = None,
     ) -> torch.Tensor:
         """预测 PPI 关系的 7 维概率。
 
@@ -90,6 +91,9 @@ class PPIPredictor(nn.Module):
             graph: PPI 图。
             subgraph_nodes: 子图中所有节点索引列表（含 u, v）。
             core_pair: 核心 PPI 对 ``(u, v)``。
+            edges: 子图的预计算无向边列表（全局节点索引对，不含核心对
+                ``(u, v)`` 直连边，防数据泄露）。为 ``None`` 时从
+                ``graph.adj_list`` 重新推导（同样排除核心对直连边）。
 
         Returns:
             7 维 Sigmoid 概率 Tensor ``[7]``。
@@ -99,7 +103,7 @@ class PPIPredictor(nn.Module):
 
         # 构建子图 PyG Data
         x, edge_index, u_local, v_local = self._build_subgraph(
-            esm, graph, subgraph_nodes, core_pair
+            esm, graph, subgraph_nodes, core_pair, edges=edges
         )
 
         # 节点投影
@@ -111,7 +115,11 @@ class PPIPredictor(nn.Module):
             h_new = norm(h_new)
             h_new = F.relu(h_new)
             h_new = F.dropout(h_new, p=self.config.gnn_dropout, training=self.training)
-            h = h + h_new  # 残差连接
+            # 残差连接（诊断用：gnn_residual_scale 放大/缩小消息传递项）
+            if self.config.gnn_residual:
+                h = h + self.config.gnn_residual_scale * h_new
+            else:
+                h = h_new
 
         # Pairwise readout
         h_u = h[u_local]  # [hidden]
@@ -137,6 +145,7 @@ class PPIPredictor(nn.Module):
         graph: PPIGraph,
         subgraph_nodes: List[int],
         core_pair: Tuple[int, int],
+        edges: Optional[List[Tuple[int, int]]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, int, int]:
         """从原始图中提取导出子图，构建 PyG 输入。
 
@@ -145,6 +154,9 @@ class PPIPredictor(nn.Module):
             graph: PPI 图。
             subgraph_nodes: 子图节点列表。
             core_pair: 核心对 (u, v)。
+            edges: 子图的预计算无向边列表（全局节点索引对，不含核心对
+                ``(u, v)`` 直连边，防数据泄露）。为 ``None`` 时从
+                ``graph.adj_list`` 重新推导（同样排除核心对直连边）。
 
         Returns:
             ``(x, edge_index, u_local, v_local)``
@@ -164,14 +176,25 @@ class PPIPredictor(nn.Module):
         indices = torch.tensor(subgraph_nodes, device=esm.device, dtype=torch.long)
         x = esm.index_select(0, indices)  # [N_sub, esm_dim]
 
-        # 构建边（无向 → 双向）
-        edge_pairs = []
-        for node in subgraph_nodes:
-            for neighbor in graph.adj_list[node]:
-                if neighbor in node_to_local and node < neighbor:
-                    li = node_to_local[node]
-                    lj = node_to_local[neighbor]
-                    edge_pairs.append([li, lj])
+        # 构建边（无向 → 双向）。
+        # 数据泄露防护：核心 PPI 对 (u, v) 的直连边即待预测标签，任何路径下
+        # 都不得进入子图拓扑（对训练集与测试集一致成立）。
+        core_key = (min(u, v), max(u, v))
+
+        # 优先使用 Sampler 预计算的边（其已排除核心对直连边，保持与采样结果一致），
+        # 否则从全局邻接表现场推导（同样排除核心对直连边）。
+        if edges is not None:
+            edge_pairs = [[node_to_local[a], node_to_local[b]] for a, b in edges]
+        else:
+            edge_pairs = []
+            for node in subgraph_nodes:
+                for neighbor in graph.adj_list[node]:
+                    if neighbor in node_to_local and node < neighbor:
+                        if (node, neighbor) == core_key:
+                            continue
+                        li = node_to_local[node]
+                        lj = node_to_local[neighbor]
+                        edge_pairs.append([li, lj])
 
         if edge_pairs:
             ei = torch.tensor(edge_pairs, device=esm.device, dtype=torch.long).t()
