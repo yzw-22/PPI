@@ -1,8 +1,7 @@
-"""Single-sample subgraph sampling for PPI prediction.
+"""Per-target subgraph sampling for batched PPI training.
 
-The sampler deliberately works with one target pair at a time.  This keeps the
-variable-size trajectory logic explicit and makes the target-edge leakage rule
-easy to audit before adding a batched implementation.
+Each target pair produces an independent variable-size trajectory; the trainer
+combines the resulting graphs for batched predictor computation.
 """
 
 from dataclasses import dataclass
@@ -55,7 +54,7 @@ class SubgraphSampler(nn.Module):
     global protein indices; when omitted, rows are treated as global indices.
     """
 
-    def __init__(self, esm_dim=2560, hidden_dim=256, max_steps=3):
+    def __init__(self, esm_dim=2560, hidden_dim=256, max_steps=10):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
@@ -63,11 +62,13 @@ class SubgraphSampler(nn.Module):
         self.esm_dim = esm_dim
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
-        self.state_proj = nn.Linear(esm_dim, hidden_dim)
-        self.query_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.query_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
         self.key_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
-        self.value_head = nn.Linear(hidden_dim, 1)
-
+        self.value_head = nn.Sequential(
+            nn.Linear(esm_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
                training=None, adjacency=None):
         """Sample one trajectory around ``target_nodes``.
@@ -104,6 +105,7 @@ class SubgraphSampler(nn.Module):
         self._add_virtual_proxies(
             selected, graph_edges, adjacency, node_features, target_local
         )
+        self._add_real_edges(selected, graph_edges, adjacency)
 
         baseline_graph = self._make_graph([u, v], set(), target_local, node_index)
         initial_graph = self._make_graph(selected, graph_edges, target_local, node_index)
@@ -116,10 +118,9 @@ class SubgraphSampler(nn.Module):
 
             selected_tensor = torch.tensor(selected, device=node_features.device)
             state = node_features[selected_tensor].to(
-                dtype=self.state_proj.weight.dtype
+                dtype=self.query_proj.weight.dtype
             ).mean(dim=0)
-            state_hidden = self.state_proj(state)
-            query = self.query_proj(state_hidden)
+            query = self.query_proj(state)
             candidate_tensor = torch.tensor(candidates, device=node_features.device)
             keys = self.key_proj(
                 node_features[candidate_tensor].to(dtype=self.key_proj.weight.dtype)
@@ -135,7 +136,7 @@ class SubgraphSampler(nn.Module):
 
             action = candidate_tensor[choice]
             action_int = int(action)
-            value = self.value_head(state_hidden).squeeze(-1)
+            value = self.value_head(state).squeeze(-1)
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
@@ -206,6 +207,14 @@ class SubgraphSampler(nn.Module):
             if action in adjacency[node]:
                 graph_edges.add(tuple(sorted((node, action))))
 
+    @staticmethod
+    def _add_real_edges(selected, graph_edges, adjacency):
+        """Add all safe real edges induced by the initial selected nodes."""
+        for index, source in enumerate(selected):
+            for target in selected[index + 1:]:
+                if target in adjacency[source]:
+                    graph_edges.add(tuple(sorted((source, target))))
+
     def _add_virtual_proxies(self, selected, graph_edges, adjacency,
                              node_features, target_local):
         available = torch.ones(node_features.shape[0], dtype=torch.bool,
@@ -216,9 +225,9 @@ class SubgraphSampler(nn.Module):
                 continue
             proxy = self._nearest_proxy(node_features[node], node_features, available)
             proxy_int = int(proxy)
-            selected.append(proxy_int)
+            if proxy_int not in selected:
+                selected.append(proxy_int)
             graph_edges.add(tuple(sorted((node, proxy_int))))
-            available[proxy_int] = False
 
     @staticmethod
     def _nearest_proxy(node, node_features, available):

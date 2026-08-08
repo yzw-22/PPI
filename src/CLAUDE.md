@@ -10,9 +10,9 @@
 
 - **输入**：PPI 节点对 `(u, v)`，以及预计算的 ESM-2 3B 蛋白质嵌入（维度 `esm_dim = 2560`）。
 - 采样器从初始子图 `G_0 = {u, v}` 出发，逐步选择邻居节点扩展，至多 `T_max` 步。
-- 预测器对子图运行 GAT 消息传递，输出 7 维多标签 Sigmoid 概率。
-- 训练时，采样器每扩展一个节点（每个时间步 `t`）都把当前子图 `G_t` 输入冻结的
-  预测器，得到该步损失 `l_t`，奖励 `r_t = l_0 - l_t`，用于 REINFORCE RL 训练。
+- 预测器对子图运行 GAT 消息传递，内部输出 7 维多标签 logits；推理接口再施加 sigmoid。
+- 训练时，采样器为 batch 中的每个目标对生成轨迹；冻结的预测器批量计算各个
+  `G_t` 的损失，奖励 `r_t = l_0 - l_t` 用于 REINFORCE RL 训练。
 
 ### 1.1 数据泄露防护（强制不变量）
 
@@ -69,6 +69,9 @@
 
 对孤立节点 `u` 或 `v`，计算所有节点与它的余弦相似度，取最大值对应的节点作为**虚拟代理**，在代理节点与被代理节点中加入一条虚拟无向边
 
+- 候选集合排除目标节点 `u`、`v`；两个目标节点可以共享同一个代理，但选中节点在子图中只保留一次。
+- 代理加入后，初始子图补入所有已选节点之间存在的真实安全边；目标边仍被排除。
+
 ### 3.3 决策记录：余弦相似度数值特征
 
 当前实现**仅用余弦相似度选择虚拟代理节点**，未将相似度数值作为额外特征
@@ -84,7 +87,7 @@
 - **图神经网络**：多层 `GATConv`（torch_geometric）+ LayerNorm + 残差连接，
   `gnn_heads` 个注意力头，输出拼接回 `hidden` 维。
 - **Readout**：获取整个子图的表征，将其与 u, v 结合，注意 u, v 顺序不应影响拼接后的向量。
-- **输出层**：自行设计，输出 7 维 Sigmoid 概率（多标签 BCE）。
+- **输出层**：输出 7 维 logits；训练使用 `BCEWithLogitsLoss`，推理时施加 sigmoid。
 
 ### 4.2 损失与奖励构造
 
@@ -97,19 +100,19 @@
 
 ## 5. 训练策略：交替训练
 
-### 5.1 Sampler 训练步
+### 5.1 Sampler 批量训练步
 
 - **固定** Predictor（`requires_grad = False`），Sampler 为训练模式。
-- 仅供参考的伪代码：
+- 对 batch 中每个目标对生成轨迹，随后批量计算基线和各步损失：
   1. 计算基线损失 `l_0`（子图 `{u, v}`）；
-  2. 运行 Sampler，得轨迹 `steps`；
-  3. 逐时间步用冻结的 Predictor 计算 `l_t`，得 `r_t = l_0 - l_t`；
+  2. 运行 Sampler，得到各目标对的 `steps`；
+  3. 用冻结的 Predictor 批量计算 `l_t`，得到 `r_t = l_0 - l_t`；
   4. `advantage = r_t - V(s_t)`；
   5. `policy_loss = -log_prob * advantage`；
   6. `value_loss = MSE(V(s_t), r_t)`；
   7. `loss = policy_loss + β * value_loss`（β = `reinforce_baseline_coef`）。
 
-### 5.2 Predictor 训练步
+### 5.2 Predictor 批量训练步
 
 - **固定** Sampler（argmax 推理模式），Predictor 为训练模式。
 ---
@@ -123,7 +126,8 @@
 ## 7. 当前实现
 
 - `SubgraphSampler`、`PPIPredictor` 和 `AlternatingTrainer` 已实现于 `src/`。
-- 采样决策仍逐样本生成，`AlternatingTrainer` 已将 Predictor/GAT 与损失按 batch 合并。
+- 采样决策仍按目标对逐样本生成；`AlternatingTrainer` 仅保留批量训练接口，
+  将 Predictor/GAT 与损失按 batch 合并。
 - `train_shs27k.py` 提供 SHS27k/bfs 的可复现实验入口。
 - 采样器接收当前 split 的 `edge_index`，并在构建邻接表前移除目标 PPI 的两个方向。
 - 虚拟代理只用于采样轨迹；预测器的基线图始终只有目标节点且无边。

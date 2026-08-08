@@ -5,7 +5,7 @@ from torch.nn import functional as F
 
 
 class AlternatingTrainer:
-    """Train a :class:`SubgraphSampler` and predictor one target pair at a time.
+    """Train a :class:`SubgraphSampler` and predictor with batched updates.
 
     The graph arguments must describe one dataset split.  The target edge is
     removed by ``SubgraphSampler`` before the trajectory is generated.
@@ -18,99 +18,6 @@ class AlternatingTrainer:
         self.sampler_optimizer = sampler_optimizer
         self.predictor_optimizer = predictor_optimizer
         self.reinforce_baseline_coef = reinforce_baseline_coef
-
-    def sampler_step(self, node_features, edge_index, target_nodes, label,
-                     node_index=None):
-        """Update the sampler while keeping the predictor fixed."""
-        sampler_requires_grad = self._set_requires_grad(self.sampler, True)
-        predictor_requires_grad = self._set_requires_grad(self.predictor, False)
-        self.sampler.train()
-        self.predictor.eval()
-
-        trajectory = self.sampler.sample(
-            node_features, edge_index, target_nodes, node_index, training=True
-        )
-        label = label.to(device=node_features.device, dtype=torch.float32)
-        with torch.no_grad():
-            baseline_logits = self._predict_graph(
-                node_features, trajectory.baseline_graph
-            )
-            baseline_loss = F.binary_cross_entropy_with_logits(
-                baseline_logits, label
-            )
-
-        if not trajectory.steps:
-            self._restore_requires_grad(self.sampler, sampler_requires_grad)
-            self._restore_requires_grad(self.predictor, predictor_requires_grad)
-            return {
-                "sampler_loss": baseline_loss.new_zeros(()),
-                "policy_loss": baseline_loss.new_zeros(()),
-                "value_loss": baseline_loss.new_zeros(()),
-                "baseline_loss": baseline_loss.detach(),
-                "mean_reward": baseline_loss.new_zeros(()),
-            }
-
-        rewards = []
-        policy_losses = []
-        value_losses = []
-        for step in trajectory.steps:
-            with torch.no_grad():
-                logits = self._predict_graph(node_features, step.graph)
-                step_loss = F.binary_cross_entropy_with_logits(logits, label)
-            reward = baseline_loss - step_loss
-            rewards.append(reward.detach())
-            advantage = reward.detach() - step.value
-            policy_losses.append(-step.log_prob * advantage.detach())
-            value_losses.append(F.mse_loss(step.value, reward.detach()))
-
-        policy_loss = torch.stack(policy_losses).mean()
-        value_loss = torch.stack(value_losses).mean()
-        loss = policy_loss + self.reinforce_baseline_coef * value_loss
-        self.sampler_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        self.sampler_optimizer.step()
-
-        self._restore_requires_grad(self.sampler, sampler_requires_grad)
-        self._restore_requires_grad(self.predictor, predictor_requires_grad)
-        return {
-            "sampler_loss": loss.detach(),
-            "policy_loss": policy_loss.detach(),
-            "value_loss": value_loss.detach(),
-            "baseline_loss": baseline_loss.detach(),
-            "mean_reward": torch.stack(rewards).mean(),
-        }
-
-    def predictor_step(self, node_features, edge_index, target_nodes, label,
-                       node_index=None):
-        """Update the predictor using the sampler's greedy trajectory."""
-        sampler_requires_grad = self._set_requires_grad(self.sampler, False)
-        predictor_requires_grad = self._set_requires_grad(self.predictor, True)
-        self.sampler.eval()
-        self.predictor.train()
-
-        with torch.no_grad():
-            trajectory = self.sampler.sample(
-                node_features, edge_index, target_nodes, node_index, training=False
-            )
-        graphs = [step.graph for step in trajectory.steps]
-        if not graphs:
-            graphs = [trajectory.baseline_graph]
-
-        label = label.to(device=node_features.device, dtype=torch.float32)
-        losses = [
-            F.binary_cross_entropy_with_logits(
-                self._predict_graph(node_features, graph), label
-            )
-            for graph in graphs
-        ]
-        loss = torch.stack(losses).mean()
-        self.predictor_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        self.predictor_optimizer.step()
-
-        self._restore_requires_grad(self.sampler, sampler_requires_grad)
-        self._restore_requires_grad(self.predictor, predictor_requires_grad)
-        return {"predictor_loss": loss.detach()}
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
                            node_index=None):
@@ -230,17 +137,6 @@ class AlternatingTrainer:
         self._restore_requires_grad(self.predictor, predictor_requires_grad)
         return {"predictor_loss": loss.detach()}
 
-    def alternating_step(self, node_features, edge_index, target_nodes, label,
-                         node_index=None):
-        """Run one sampler update followed by one predictor update."""
-        sampler_metrics = self.sampler_step(
-            node_features, edge_index, target_nodes, label, node_index
-        )
-        predictor_metrics = self.predictor_step(
-            node_features, edge_index, target_nodes, label, node_index
-        )
-        return {**sampler_metrics, **predictor_metrics}
-
     def alternating_batch_step(self, node_features, edge_index, target_nodes,
                                labels, node_index=None):
         """Run one batched sampler update and one batched predictor update."""
@@ -251,13 +147,6 @@ class AlternatingTrainer:
             node_features, edge_index, target_nodes, labels, node_index
         )
         return {**sampler_metrics, **predictor_metrics}
-
-    def _predict_graph(self, node_features, graph):
-        return self.predictor(
-            node_features[graph.feature_index],
-            graph.edge_index,
-            graph.target_nodes,
-        )
 
     def _predict_graphs(self, node_features, graphs):
         features = []
