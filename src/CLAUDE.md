@@ -1,142 +1,74 @@
-# 任务目标
+# 核心代码设计
 
-实现一个基于强化学习的蛋白质-蛋白质相互作用（PPI）预测系统。系统包含两个核心模块：
-**子图采样器（SubgraphSampler）** 与 **预测器（PPIPredictor）**，通过**交替训练**
-联合优化。本文档描述当前项目的实际架构、训练流程与关键不变量，供后续开发与修改参考。
+系统由 `PPIGraph`、`SubgraphSampler`、`PPIPredictor` 和 `AlternatingTrainer` 组成。输入为目标蛋白对及 2560 维 ESM-2 嵌入，输出为 7 维 PPI 多标签 logits。
 
----
+## PPIGraph
 
-## 1. 总体架构
+- 从 actions 文件按无向蛋白对 OR 聚合标签。
+- `build_graph()` 按 train/val/test 单独建图，默认补全反向边。
+- 当前训练使用 `remap_nodes=False`，使 `edge_index`、`node_index` 和特征行采用全局蛋白索引。
+- `get_dataloader()` 是可用的公共接口；当前训练入口使用 `torch.randperm` 手动切 batch。
 
-- **输入**：PPI 节点对 `(u, v)`，以及预计算的 ESM-2 3B 蛋白质嵌入（维度 `esm_dim = 2560`）。
-- 采样器从初始子图 `G_0 = {u, v}` 出发，逐步选择邻居节点扩展，至多 `T_max` 步。
-- 预测器对子图运行 GAT 消息传递，内部输出 7 维多标签 logits；推理接口再施加 sigmoid。
-- 训练时，采样器为 batch 中的每个目标对生成轨迹；冻结的预测器批量计算各个
-  `G_t` 的损失，奖励 `r_t = l_0 - l_t` 用于 REINFORCE RL 训练。
+## SubgraphSampler
 
-### 1.1 数据泄露防护（强制不变量）
+### 初始化与防泄漏
 
-核心 PPI 对 `(u, v)` 的直连边**正是待预测的标签**。因此它**在任何路径下都不得
-出现在子图的边列表中**——对训练集与测试集一致成立：
+- 输入拓扑必须来自当前 split。
+- 每个目标对采样前移除目标边的两个方向。
+- `baseline_graph` 只含 `u、v`，不含边。
+- 移除目标边后，安全邻接为空的目标节点被视为孤立节点。
+- 孤立目标从目标节点以外的全部节点中选择余弦相似度最高者作为虚拟代理；两个目标可以共享代理，节点列表保持唯一。
+- 虚拟代理加入后，补齐已选节点之间的真实安全边。虚拟边与真实边均进入采样子图。
 
-- 排除 `(u, v)` 之间的无向边；
-- 由此基线子图 `G_0 = {u, v}` 不含任何边，`l_0` 成为"仅靠 u/v 自身节点特征、
-  无结构信息"的干净基线。
+### 轨迹
 
-此外，采样器的状态与邻居表征只使用**节点级 ESM 嵌入**，不使用边标签特征，
-从源头避免标签信号进入结构表征。
+- 状态是当前已选节点 ESM 嵌入的均值。
+- 动作空间是与当前子图相邻但尚未选择的节点。
+- Query 和 Key 分别由线性投影得到，动作分数使用缩放点积。
+- 训练时从 `Categorical` 采样并记录 `log_prob`；评估时使用 `argmax`。
+- Value 由独立两层 MLP 从状态估计。
+- 每次动作加入一个节点及其与已选节点之间的全部真实边；达到 `max_steps` 或前沿为空时结束。
+- `max_steps` 是动作数上限，不是 hop 深度上限，当前没有 STOP 动作。
 
----
+## PPIPredictor
 
-## 2. 子图采样器（src/sampler.py）
+- 节点编码：`Linear + LayerNorm + ReLU + Dropout`。
+- 图编码：多层 `GATConv + ELU + Dropout + 残差 + LayerNorm`。
+- Readout：拼接 `h_u+h_v`、`|h_u-h_v|` 和子图节点均值。
+- 输出 7 维 logits；`predict_proba()` 对单图 logits 应用 sigmoid。
+- 全图均值直接参与输出，因此距离目标超过 GAT 层数的节点仍会影响预测。
 
-### 2.1 图定义与初始化
+## AlternatingTrainer
 
-- 图结构：节点代表蛋白质，边由 PPI 网络提供（`PPIGraph`，邻接表 + 边特征）。
-- 输入：PPI 节点对 `(u, v)`。
-- 初始子图：`G_0 = {u, v}`（若 `u` 或 `v` 是孤立蛋白，则注入虚拟代理，见 §3）。
+训练接口仅保留 batch 版本，但每条可变长度轨迹仍逐目标生成。
 
-### 2.2 采样过程
+### Sampler 更新
 
-对于时间步 `t >= 0` 的子图 `G_t`：
-- **动作空间**：从前沿 `N_t - G_t`（与子图相邻但不在子图内的节点）中选择一个
-  节点加入子图，并加入其与子图的无向连边。
-- **终止条件**：达到最大扩展次数 `T_max` 或前沿为空。
-- **状态表征 `s_t`**：子图 `G_t` 中所有节点 ESM 嵌入的均值。
+1. 冻结 Predictor，Sampler 使用随机动作生成轨迹。
+2. Predictor 批量计算无边基线图和所有 step 子图的 BCE loss。
+3. 对每一步计算 `reward = baseline_loss - step_loss`。
+4. 使用 `policy_loss = -log_prob × stop_gradient(reward-value)` 和 `value_loss = MSE(value,reward)` 更新 Sampler。
 
-### 2.3 动作策略
+所有 step 等权平均；轨迹较长的样本贡献更多项，reward 不按节点数或轨迹长度归一化。
 
-对候选邻居节点 `i`：
-1. 邻居表征即它的 ESM 嵌入，记为 `neighbor_i`。
-2. 缩放点积注意力得分 `score_i = (W_Q · s_t) · (W_K · neighbor_i) / sqrt(d)`。
-3. Softmax 得概率分布 `probs`。
-4. 价值网络 `V(s_t)` 估计状态价值，用于 REINFORCE 方差缩减。
+### Predictor 更新
 
-### 2.4 训练与推理模式
+1. 冻结 Sampler，以贪心动作重新生成轨迹。
+2. 使用每条轨迹的全部 step 子图；无 step 时使用基线图。
+3. 拼接节点、偏移边索引并构造 batch 向量，一次执行 GAT。
+4. 使用 BCE with logits 更新 Predictor。
 
-- **训练模式**：从 `Categorical(probs)` 采样节点，记录 `log_prob`。
-- **推理模式**：`argmax` 选择概率最大的节点。
+每个 batch 固定执行“Sampler 更新 → Predictor 更新”。
 
----
+## 评估
 
-## 3. 孤立节点处理机制
+- 分别使用测试 split 的特征和拓扑，Sampler 采用贪心动作。
+- 每条轨迹使用 `final_graph`；无 step 时为含代理的 `initial_graph`。
+- logits 经 sigmoid 后，以 0.5 为 F1 阈值，报告 Macro/Micro ROC-AUC 和 F1。
 
-### 3.1 定义
+## 已验证不变量
 
-在 PPI 对 `(u, v)` 中，若 `u` 仅与 `v` 有边，则 `u` 为孤立节点
-
-### 3.2 虚拟代理注入
-
-对孤立节点 `u` 或 `v`，计算所有节点与它的余弦相似度，取最大值对应的节点作为**虚拟代理**，在代理节点与被代理节点中加入一条虚拟无向边
-
-- 候选集合排除目标节点 `u`、`v`；两个目标节点可以共享同一个代理，但选中节点在子图中只保留一次。
-- 代理加入后，初始子图补入所有已选节点之间存在的真实安全边；目标边仍被排除。
-
-### 3.3 决策记录：余弦相似度数值特征
-
-当前实现**仅用余弦相似度选择虚拟代理节点**，未将相似度数值作为额外特征
-拼接到状态向量或邻居表征中。保持该策略。
-
----
-
-## 4. 预测器（src/predictor.py）
-
-### 4.1 架构
-
-- **节点投影**：`Linear(esm_dim → hidden) + LayerNorm + ReLU + Dropout`。
-- **图神经网络**：多层 `GATConv`（torch_geometric）+ LayerNorm + 残差连接，
-  `gnn_heads` 个注意力头，输出拼接回 `hidden` 维。
-- **Readout**：获取整个子图的表征，将其与 u, v 结合，注意 u, v 顺序不应影响拼接后的向量。
-- **输出层**：输出 7 维 logits；训练使用 `BCEWithLogitsLoss`，推理时施加 sigmoid。
-
-### 4.2 损失与奖励构造
-
-- **损失**：7 维概率与 multi-hot 标签的 Binary Cross-Entropy（BCE）。
-- **基线损失 `l_0`**：初始子图 `G_0 = {u, v}`（无任何边）输入预测器的 BCE，对于有虚拟代理的情况，也是只输入 `u, v`，代表不采用子图提取方法的基线。
-- **子图损失 `l_t`**：当前子图 `G_t` 输入预测器的 BCE。
-- **奖励**：`r_t = l_0 - l_t`（正值表示引入子图信息带来的性能提升）。
-
----
-
-## 5. 训练策略：交替训练
-
-### 5.1 Sampler 批量训练步
-
-- **固定** Predictor（`requires_grad = False`），Sampler 为训练模式。
-- 对 batch 中每个目标对生成轨迹，随后批量计算基线和各步损失：
-  1. 计算基线损失 `l_0`（子图 `{u, v}`）；
-  2. 运行 Sampler，得到各目标对的 `steps`；
-  3. 用冻结的 Predictor 批量计算 `l_t`，得到 `r_t = l_0 - l_t`；
-  4. `advantage = r_t - V(s_t)`；
-  5. `policy_loss = -log_prob * advantage`；
-  6. `value_loss = MSE(V(s_t), r_t)`；
-  7. `loss = policy_loss + β * value_loss`（β = `reinforce_baseline_coef`）。
-
-### 5.2 Predictor 批量训练步
-
-- **固定** Sampler（argmax 推理模式），Predictor 为训练模式。
----
-
-## 6. 评估与推理
-
-测试指标采用 AUC-ROC、MACRO-F1、MICRO-F1。
-
----
-
-## 7. 当前实现
-
-- `SubgraphSampler`、`PPIPredictor` 和 `AlternatingTrainer` 已实现于 `src/`。
-- 采样决策仍按目标对逐样本生成；`AlternatingTrainer` 仅保留批量训练接口，
-  将 Predictor/GAT 与损失按 batch 合并。
-- `train_shs27k.py` 提供 SHS27k/bfs 的可复现实验入口。
-- 采样器接收当前 split 的 `edge_index`，并在构建邻接表前移除目标 PPI 的两个方向。
-- 虚拟代理只用于采样轨迹；预测器的基线图始终只有目标节点且无边。
-- `PPIPredictor.forward()` 返回 logits；训练使用 `BCEWithLogitsLoss`，推理使用 `predict_proba()` 返回 sigmoid 概率。
-- `PPIGraph.build_graph(split_name, remap_nodes=False)` 是当前训练器的推荐输入，保证节点特征索引与全局蛋白索引一致。
-
-### 7.1 已验证不变量
-
-- 采样轨迹中不会出现目标 PPI 的正向或反向边。
-- 虚拟代理不会选择目标对端。
-- Predictor 的目标对表示使用 `u + v` 与 `abs(u - v)`，交换 `(u, v)` 不改变输出。
-- 采样器训练模式记录 `log_prob`，推理模式使用贪心 argmax。
+- 采样子图不包含目标边的任一方向。
+- 虚拟代理不会选择目标节点，可以被两个目标共享。
+- 代理初始化后保留已选节点之间的真实安全边。
+- Predictor 的目标对表示对端点交换保持不变。

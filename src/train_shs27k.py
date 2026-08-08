@@ -27,7 +27,6 @@ def evaluate(trainer, node_features, split_graph, targets, labels, batch_size):
     with torch.no_grad():
         for start in range(0, len(targets), batch_size):
             target_batch = targets[start:start + batch_size]
-            label_batch = labels[start:start + batch_size]
             trajectories = [
                 trainer.sampler.sample(
                     node_features,
@@ -99,8 +98,6 @@ def run(args):
     experiment_start = time.perf_counter()
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
-        sampler.train()
-        predictor.train()
         order = torch.randperm(train_targets.shape[0], device=device)
         totals = {"sampler_loss": 0.0, "predictor_loss": 0.0, "mean_reward": 0.0}
         seen = 0

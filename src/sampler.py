@@ -26,8 +26,6 @@ class SamplingStep:
     """One action and the graph produced after taking that action."""
 
     graph: SampledGraph
-    state: torch.Tensor
-    action: torch.Tensor
     log_prob: torch.Tensor
     value: torch.Tensor
 
@@ -69,6 +67,7 @@ class SubgraphSampler(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
+
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
                training=None, adjacency=None):
         """Sample one trajectory around ``target_nodes``.
@@ -82,8 +81,7 @@ class SubgraphSampler(nn.Module):
 
         Returns:
             ``SamplingTrajectory``.  Each step contains the graph *after* its
-            action, while ``state``, ``log_prob`` and ``value`` describe the
-            decision made before that action.
+            action, while ``log_prob`` and ``value`` describe the decision.
         """
         if training is None:
             training = self.training
@@ -140,7 +138,7 @@ class SubgraphSampler(nn.Module):
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
-            steps.append(SamplingStep(graph, state, action, log_prob, value))
+            steps.append(SamplingStep(graph, log_prob, value))
 
         return SamplingTrajectory(baseline_graph, initial_graph, steps)
 

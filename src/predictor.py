@@ -22,7 +22,6 @@ class PPIPredictor(nn.Module):
             raise ValueError("num_layers must be positive")
 
         self.esm_dim = esm_dim
-        self.hidden_dim = hidden_dim
         self.input_proj = nn.Sequential(
             nn.Linear(esm_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
