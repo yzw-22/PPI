@@ -85,7 +85,9 @@ class PPIGraph:
     # ------------------------------------------------------------------ #
     def _load(self):
         """Load every file needed by the dataset and precompute labels."""
-        self.tensor = torch.load(self.root / f"{self.name}_tensor.pt").to(self.device)
+        self.tensor = torch.load(
+            self.root / f"{self.name}_tensor.pt", weights_only=True
+        ).to(self.device)
         self.ppi_list = json.loads(
             (self.root / f"{self.name}_ppi_list.json").read_text()
         )  # list of [protein_a, protein_b]
@@ -97,29 +99,14 @@ class PPIGraph:
                 f"{self.name}: protein dict ({len(self.proteins)}) rows != "
                 f"tensor rows ({self.tensor.shape[0]})"
             )
-        # row index of the protein dict == Protein Index
-        self.protein_id2idx = {p["id"]: i for i, p in enumerate(self.proteins)}
 
         self.split_index = json.loads(
             (self.root / f"{self.name}_{self.split}.json").read_text()
         )
-        self._check_split_index()
 
         self.ppi_labels = self._load_labels()
         self.ppi = torch.tensor(self.ppi_list, dtype=torch.long, device=self.device)
         # ppi[a, 0] / ppi[a, 1] = protein indices of PPI index a
-
-    def _check_split_index(self):
-        """Validate split indices are PPI indices within bounds and cover all splits."""
-        n_ppi = len(self.ppi_list)
-        for split_name in self.SPLIT_NAMES:
-            idx = self.split_index.get(f"{split_name}_index")
-            if idx is None:
-                raise ValueError(f"split json for {self.name}/{self.split} missing "
-                                 f"{split_name}_index")
-            for i in idx:
-                if not (0 <= i < n_ppi):
-                    raise ValueError(f"PPI index {i} out of range [0, {n_ppi}) in {split_name}")
 
     def _load_labels(self):
         """Return a ``[n_ppi, 7]`` float32 multi-hot label tensor.
@@ -240,12 +227,13 @@ class PPIGraph:
 
         ``shuffle`` defaults to ``True`` for train, ``False`` otherwise.
         """
-        if split_name not in self.SPLIT_NAMES:
-            raise ValueError(f"split_name must be one of {self.SPLIT_NAMES}")
+        if self.device.type == "cuda" and num_workers:
+            raise ValueError("num_workers must be 0 when PPIGraph uses a CUDA device")
+        if self.device.type == "cuda" and pin_memory:
+            raise ValueError("pin_memory requires CPU tensors; use device='cpu'")
         if shuffle is None:
             shuffle = split_name == "train"
         dataset = _PPIDataset(self, self.get_ppi_indices(split_name))
-        pin_memory = pin_memory and self.device.type == "cuda"
         return DataLoader(
             dataset,
             batch_size=batch_size,

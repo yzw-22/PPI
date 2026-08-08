@@ -46,6 +46,9 @@ Split
 src/
   __init__.py
   ppi_graph.py    # PPIGraph 类：加载数据集 + 逐 split 建图 + DataLoader
+  sampler.py      # 单样本子图采样器：REINFORCE 轨迹与虚拟代理
+  predictor.py    # GAT PPI 多标签预测器
+  trainer.py      # Sampler / Predictor 交替训练
 ```
 
 ## 4. PPIGraph 类设计
@@ -65,7 +68,7 @@ PPIGraph(name='SHS27k', split='bfs', root='dataset', device='cpu', cache_dir=Non
 构造时完成全部加载：
 - `self.tensor`：`[M, 2560]` bf16 嵌入
 - `self.ppi_list`：PPI Index → [protein_a, protein_b]
-- `self.proteins` / `self.protein_id2idx`：蛋白字典（行号 = Protein Index）
+- `self.proteins`：蛋白字典（行号 = Protein Index）
 - `self.split_index`：train/val/test 的 PPI Index
 - `self.ppi_labels`：`[N, 7]` float32 multi-hot（对 actions.txt 做无向对 mode OR 聚合）
 - `self.ppi`：`[N, 2]` LongTensor，`ppi[i]` = PPI i 的蛋白索引
@@ -90,6 +93,7 @@ get_dataloader(split_name='train', batch_size=32, shuffle=None, num_workers=0,
 
 - 每个样本 `(u, v, label)`：`u, v` 为 `[B]` 蛋白索引 LongTensor，`label` 为 `[B, 7]` float32。
 - `shuffle` 默认 train=True，val/test=False。
+- `pin_memory=True` 仅适用于 `device='cpu'`；当数据已在 CUDA 上时不应再 pin，且 CUDA 数据集要求 `num_workers=0`。
 - 数据集类：`_PPIDataset`（见 [src/ppi_graph.py](src/ppi_graph.py)）。
 
 ## 5. 关键决策与依据（开发报告核心）
@@ -114,8 +118,39 @@ get_dataloader(split_name='train', batch_size=32, shuffle=None, num_workers=0,
 
 - **R1**：完成 `PPIGraph` 类（加载 + 逐 split 建图 + DataLoader）。
 - **R2**：验证「ppi_list 只列单向 PPI 对」断言成立；`build_graph` 新增 `undirected=True` 补全反向边；修复拼接时 `u` 被提前重赋值导致 `v = cat([v, u])` 长度错乱（3E）的 bug。
+- **R3**：审查 `ppi_graph.py`：删除错误的 `pin_memory` 重写逻辑；CUDA 数据集禁止 `pin_memory` 和多进程 worker；使用安全的 `weights_only=True` 加载张量。
+- **R4**：删除未被实现消费的 `protein_id2idx` 冗余预计算，并同步接口说明。
+- **R5**：按 `src/CLAUDE.md` 完成单样本 `SubgraphSampler`、`PPIPredictor` 与 `AlternatingTrainer`；采样仅使用当前 split 拓扑，并移除目标边防止标签泄露。
+- **R6**：移除额外的 split 完整性扫描及 `get_dataloader()` 中重复的 `split_name` 检查，默认数据文件按数据集约定有效。
+- **R7**：增加批量 Predictor/GAT 训练与 SHS27k/bfs 实验入口，完成 CUDA 全量 10 epoch 训练。
 
 ## 8. 后续 / 待办
 
-- 深度学习模型设计（嵌入特征 → 边分类 / GNN 消息传递），确保 `(u,v)`/`(v,u)` 输出对称。
-- CUDA 训练脚本（`get_dataloader` 已支持 `pin_memory` 与 `device='cuda'`）。
+- 扩展模型训练与评估脚本，当前 `PPIPredictor` 已支持嵌入特征 → GAT 边分类，并确保 `(u,v)`/`(v,u)` 输出对称。
+- CUDA 训练脚本（建议图数据放在 CUDA 上并使用 `num_workers=0`、`pin_memory=False`；若需 pin memory，应让图保持在 CPU 上并在训练循环中搬运 batch）。
+- 更高效的批量采样决策；当前实现已支持批量 Predictor，但采样动作仍逐样本生成。
+
+## 9. 本轮审查结论
+
+- 已修复：原实现把 `pin_memory` 在 CUDA 上强制打开、在 CPU 上强制关闭，方向相反；CUDA tensor 不能被 pin，CPU batch 则因此失去异步搬运收益。
+- 已调整：移除不会参与建图结果的 split 完整性扫描；split 文件按数据集约定直接读取，具体索引错误由后续张量索引自然暴露。
+- 仍需注意：标签缓存文件名只包含数据集名，不包含 `root` 或数据版本；多个不同数据根目录共用同一个 `cache_dir` 时可能误用旧缓存。当前接口仍假定调用方为每套数据使用独立缓存目录。
+
+## 10. SHS27k/bfs 全量训练结果
+
+配置：CUDA、seed=42、batch size=32、hidden=256、GAT 2 层/4 heads、最大采样步数 3、Sampler lr=1e-4、Predictor lr=1e-3。训练集 4,562 对，测试集 1,538 对，耗时约 530 秒。F1 使用 sigmoid 阈值 0.5。
+
+| Epoch | Sampler loss | Predictor loss | Mean reward | Test ROC-AUC macro | Test ROC-AUC micro | Test F1 macro | Test F1 micro |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | -0.005490 | 0.480742 | 0.006716 | 0.709452 | 0.747444 | 0.444534 | 0.512271 |
+| 2 | -0.003628 | 0.374455 | 0.043777 | 0.712051 | 0.743736 | 0.380833 | 0.440964 |
+| 3 | -0.001164 | 0.310331 | 0.054743 | 0.728985 | 0.743354 | 0.420607 | 0.490469 |
+| 4 | -0.000344 | 0.273286 | 0.059335 | 0.732441 | 0.770116 | 0.484489 | 0.542383 |
+| 5 | 0.002193 | 0.239935 | 0.067391 | 0.731386 | 0.757221 | 0.496450 | 0.524898 |
+| 6 | 0.002004 | 0.212568 | 0.069630 | 0.721438 | 0.737533 | 0.437038 | 0.463569 |
+| 7 | 0.000728 | 0.188540 | 0.068576 | 0.756130 | 0.786363 | 0.537962 | 0.593515 |
+| 8 | 0.001988 | 0.172383 | 0.069906 | 0.749133 | 0.779100 | 0.543118 | 0.588333 |
+| 9 | 0.001842 | 0.159224 | 0.067951 | 0.755753 | 0.787892 | 0.535114 | 0.585588 |
+| 10 | 0.002193 | 0.140889 | 0.069434 | 0.746808 | 0.780301 | 0.507484 | 0.564287 |
+
+最佳测试 Macro ROC-AUC 为 epoch 7 的 0.756130；最佳 Micro ROC-AUC 为 epoch 9 的 0.787892；最佳 Macro-F1 为 epoch 8 的 0.543118；最佳 Micro-F1 为 epoch 7 的 0.593515。完整结果保存于 `shs27k_bfs_10epoch.json`。
