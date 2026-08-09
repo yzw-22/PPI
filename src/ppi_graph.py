@@ -159,7 +159,7 @@ class PPIGraph:
             self.split_index[f"{split_name}_index"], dtype=torch.long, device=self.device
         )
 
-    def build_graph(self, split_name="train", remap_nodes=True, undirected=True):
+    def build_graph(self, split_name="train", undirected=True):
         """Build the PPI graph induced by one split.
 
         ``ppi_list`` lists every undirected PPI pair exactly once, in an
@@ -167,16 +167,14 @@ class PPIGraph:
         edges are added so message passing sees a true undirected graph.
 
         Returns a dict with:
-            edge_index  : LongTensor [2, E]   protein indices of each edge (u -> v)
+            edge_index  : LongTensor [2, E]   local node indices of each edge (u -> v)
             edge_label  : FloatTensor [E, 7]  multi-hot label of each edge
             node_index  : LongTensor [N]      global protein indices of the graph's nodes
             node_feat   : Tensor   [N, 2560]  ESM-2 embeddings of the nodes
 
-        With ``remap_nodes=True`` (default) ``node_index`` is sorted and the
-        ``edge_index`` refers to *local* node ids (0..N-1) so that
-        ``node_feat[node]`` is the right embedding for message passing.
-        With ``remap_nodes=False``, ``edge_index`` keeps the original global
-        protein indices and ``node_feat`` is the full dataset tensor.
+        ``node_index`` is sorted and ``edge_index`` always refers to *local*
+        node ids (0..N-1).  The graph and its feature/proxy candidate pool
+        therefore contain only nodes present in the requested split.
         """
         ppi_idx = self.get_ppi_indices(split_name)
         u = self.ppi[ppi_idx, 0]
@@ -191,20 +189,15 @@ class PPIGraph:
             v = torch.cat([v_orig, u_orig])
             labels = labels.repeat(2, 1)
 
-        if remap_nodes:
-            nodes = torch.unique(torch.cat([u, v]))
-            node_index = nodes
-            # global protein index -> local node id
-            local = torch.full(
-                (self.tensor.shape[0],), -1, dtype=torch.long, device=self.device
-            )
-            local[nodes] = torch.arange(nodes.numel(), device=self.device)
-            edge_index = torch.stack([local[u], local[v]], dim=0)  # [2, E]
-            node_feat = self.tensor[nodes]  # [N, 2560]
-        else:
-            node_index = torch.arange(self.tensor.shape[0], device=self.device)
-            edge_index = torch.stack([u, v], dim=0)
-            node_feat = self.tensor
+        nodes = torch.unique(torch.cat([u, v]))
+        node_index = nodes
+        # global protein index -> local node id
+        local = torch.full(
+            (self.tensor.shape[0],), -1, dtype=torch.long, device=self.device
+        )
+        local[nodes] = torch.arange(nodes.numel(), device=self.device)
+        edge_index = torch.stack([local[u], local[v]], dim=0)  # [2, E]
+        node_feat = self.tensor[nodes]  # [N, 2560]
 
         return {
             "edge_index": edge_index,

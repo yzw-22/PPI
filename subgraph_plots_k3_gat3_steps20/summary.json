@@ -1,0 +1,926 @@
+{
+  "config": {
+    "root": "dataset",
+    "cache_dir": "dataset/.cache",
+    "output": null,
+    "device": "cuda",
+    "epochs": 6,
+    "batch_size": 32,
+    "eval_batch_size": 64,
+    "hidden_dim": 512,
+    "max_steps": 20,
+    "k_hops": 3,
+    "gnn_layers": 3,
+    "heads": 4,
+    "dropout": 0.1,
+    "sampler_lr": 0.0001,
+    "predictor_lr": 0.001,
+    "reinforce_baseline_coef": 0.1,
+    "reinforce_gamma": 0.95,
+    "seed": 42
+  },
+  "selection": "same PPI indices as previous experiment: train [2,3821,1026], test [2208,3742,685]",
+  "samples": [
+    {
+      "split": "train",
+      "ppi_index": 2,
+      "target_global": [
+        0,
+        3
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 2,
+      "final_nodes": 22,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 26,
+      "connected_components": 1,
+      "largest_component": 22,
+      "max_component_diameter": 7,
+      "cyclomatic_number": 5,
+      "target_edge_present": false,
+      "target_degrees": [
+        4,
+        4
+      ],
+      "degree_sequence_desc": [
+        6,
+        6,
+        4,
+        4,
+        4,
+        3,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        0,
+        3,
+        62,
+        297,
+        207,
+        40,
+        252,
+        211,
+        265,
+        15,
+        763,
+        757,
+        161,
+        165,
+        756,
+        31,
+        739,
+        699,
+        707,
+        740,
+        912,
+        503
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/train_ppi_2.png"
+    },
+    {
+      "split": "train",
+      "ppi_index": 3821,
+      "target_global": [
+        493,
+        255
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 2,
+      "final_nodes": 22,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 34,
+      "connected_components": 1,
+      "largest_component": 22,
+      "max_component_diameter": 5,
+      "cyclomatic_number": 13,
+      "target_edge_present": false,
+      "target_degrees": [
+        9,
+        1
+      ],
+      "degree_sequence_desc": [
+        9,
+        8,
+        7,
+        6,
+        6,
+        4,
+        4,
+        3,
+        3,
+        3,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        493,
+        255,
+        707,
+        1192,
+        915,
+        912,
+        503,
+        502,
+        1395,
+        708,
+        701,
+        740,
+        495,
+        515,
+        607,
+        699,
+        734,
+        720,
+        739,
+        727,
+        917,
+        394
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/train_ppi_3821.png"
+    },
+    {
+      "split": "train",
+      "ppi_index": 1026,
+      "target_global": [
+        612,
+        640
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 3,
+      "final_nodes": 23,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 26,
+      "connected_components": 2,
+      "largest_component": 21,
+      "max_component_diameter": 7,
+      "cyclomatic_number": 5,
+      "target_edge_present": false,
+      "target_degrees": [
+        4,
+        1
+      ],
+      "degree_sequence_desc": [
+        8,
+        6,
+        5,
+        4,
+        4,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        612,
+        640,
+        985,
+        637,
+        316,
+        126,
+        638,
+        564,
+        255,
+        675,
+        1136,
+        668,
+        495,
+        515,
+        503,
+        707,
+        912,
+        607,
+        502,
+        1349,
+        1126,
+        491,
+        1130
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/train_ppi_1026.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 2208,
+      "target_global": [
+        208,
+        297
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 2,
+      "final_nodes": 22,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 29,
+      "connected_components": 2,
+      "largest_component": 21,
+      "max_component_diameter": 5,
+      "cyclomatic_number": 9,
+      "target_edge_present": false,
+      "target_degrees": [
+        9,
+        0
+      ],
+      "degree_sequence_desc": [
+        9,
+        8,
+        7,
+        5,
+        4,
+        3,
+        3,
+        3,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "final_global_nodes": [
+        208,
+        297,
+        675,
+        207,
+        150,
+        224,
+        842,
+        265,
+        844,
+        278,
+        37,
+        284,
+        739,
+        31,
+        27,
+        232,
+        696,
+        19,
+        1466,
+        32,
+        13,
+        1388
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/test_ppi_2208.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 3742,
+      "target_global": [
+        841,
+        227
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 2,
+      "final_nodes": 22,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 24,
+      "connected_components": 2,
+      "largest_component": 19,
+      "max_component_diameter": 6,
+      "cyclomatic_number": 4,
+      "target_edge_present": false,
+      "target_degrees": [
+        2,
+        8
+      ],
+      "degree_sequence_desc": [
+        8,
+        7,
+        5,
+        3,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        841,
+        227,
+        675,
+        162,
+        150,
+        252,
+        265,
+        844,
+        278,
+        31,
+        284,
+        739,
+        27,
+        37,
+        224,
+        232,
+        696,
+        19,
+        294,
+        1466,
+        32,
+        909
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/test_ppi_3742.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 685,
+      "target_global": [
+        4,
+        418
+      ],
+      "sampling_steps": 20,
+      "initial_nodes": 3,
+      "final_nodes": 23,
+      "expanded_nodes": 20,
+      "final_undirected_edges": 27,
+      "connected_components": 1,
+      "largest_component": 23,
+      "max_component_diameter": 5,
+      "cyclomatic_number": 5,
+      "target_edge_present": false,
+      "target_degrees": [
+        14,
+        1
+      ],
+      "degree_sequence_desc": [
+        14,
+        6,
+        5,
+        4,
+        3,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        4,
+        418,
+        417,
+        297,
+        207,
+        265,
+        172,
+        37,
+        224,
+        284,
+        739,
+        31,
+        27,
+        232,
+        696,
+        463,
+        400,
+        313,
+        19,
+        470,
+        477,
+        279,
+        294
+      ],
+      "image": "/root/PPI/subgraph_plots_k3_gat3_steps20/test_ppi_685.png"
+    }
+  ],
+  "training_replay_for_plots": {
+    "config": {
+      "root": "dataset",
+      "cache_dir": "dataset/.cache",
+      "output": null,
+      "device": "cuda",
+      "epochs": 6,
+      "batch_size": 32,
+      "eval_batch_size": 64,
+      "hidden_dim": 512,
+      "max_steps": 20,
+      "k_hops": 3,
+      "gnn_layers": 3,
+      "heads": 4,
+      "dropout": 0.1,
+      "sampler_lr": 0.0001,
+      "predictor_lr": 0.001,
+      "reinforce_baseline_coef": 0.1,
+      "reinforce_gamma": 0.95,
+      "seed": 42
+    },
+    "total_seconds": 1299.0318229403347,
+    "epochs": [
+      {
+        "epoch": 1,
+        "sampler_loss": 0.02054551891951525,
+        "predictor_loss": 0.5310056385947967,
+        "mean_reward": 0.0033199567768526484,
+        "seconds": 219.89109336212277
+      },
+      {
+        "epoch": 2,
+        "sampler_loss": 0.18960682457865774,
+        "predictor_loss": 0.4325463234437552,
+        "mean_reward": 0.04369151113568717,
+        "seconds": 226.4259276241064
+      },
+      {
+        "epoch": 3,
+        "sampler_loss": 0.24292449546665124,
+        "predictor_loss": 0.3800616722418414,
+        "mean_reward": 0.07523344705949617,
+        "seconds": 217.8639666866511
+      },
+      {
+        "epoch": 4,
+        "sampler_loss": 0.24171802681143584,
+        "predictor_loss": 0.3400602958564014,
+        "mean_reward": 0.09933860848238467,
+        "seconds": 215.23382325097919
+      },
+      {
+        "epoch": 5,
+        "sampler_loss": 0.3288375728227548,
+        "predictor_loss": 0.30542189809169124,
+        "mean_reward": 0.11846615158181502,
+        "seconds": 207.88594137877226
+      },
+      {
+        "epoch": 6,
+        "sampler_loss": 0.42882773270997915,
+        "predictor_loss": 0.28200210099782613,
+        "mean_reward": 0.1375000004569646,
+        "seconds": 211.73065234906971
+      }
+    ]
+  },
+  "training_formal": {
+    "config": {
+      "root": "dataset",
+      "cache_dir": "dataset/.cache",
+      "output": "/tmp/shs27k_bfs_6epoch_h512_steps20_k3_gamma095_gat3.json",
+      "device": "cuda",
+      "epochs": 6,
+      "batch_size": 32,
+      "eval_batch_size": 64,
+      "hidden_dim": 512,
+      "max_steps": 20,
+      "k_hops": 3,
+      "gnn_layers": 3,
+      "heads": 4,
+      "dropout": 0.1,
+      "sampler_lr": 0.0001,
+      "predictor_lr": 0.001,
+      "reinforce_baseline_coef": 0.1,
+      "reinforce_gamma": 0.95,
+      "seed": 42
+    },
+    "total_seconds": 1462.0720367264003,
+    "epochs": [
+      {
+        "epoch": 1,
+        "sampler_loss": 0.020366003464928638,
+        "predictor_loss": 0.5322793753771132,
+        "mean_reward": 0.004317622692777429,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.6600080773720478,
+        "val_roc_auc_micro": 0.702964844639506,
+        "val_f1_macro": 0.2109008769072008,
+        "val_f1_micro": 0.4114998268098372,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.6523603144807067,
+            "roc_auc_micro": 0.6894850249970864,
+            "f1_macro": 0.20982814172458927,
+            "f1_micro": 0.4087694483734088
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6872607455134304,
+            "roc_auc_micro": 0.7401944593006786,
+            "f1_macro": 0.21331550398273932,
+            "f1_micro": 0.41906005221932113
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.654667951485214,
+        "test_roc_auc_micro": 0.7031373373480883,
+        "test_f1_macro": 0.22996411242292406,
+        "test_f1_micro": 0.41755227973945835,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.6401858233300698,
+            "roc_auc_micro": 0.6910448603768341,
+            "f1_macro": 0.22862105480114,
+            "f1_micro": 0.42117930204572807
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6872564017016971,
+            "roc_auc_micro": 0.7324022615361713,
+            "f1_macro": 0.230620380198954,
+            "f1_micro": 0.40857653365098273
+          }
+        },
+        "seconds": 245.57161124795675
+      },
+      {
+        "epoch": 2,
+        "sampler_loss": 0.19002347946794135,
+        "predictor_loss": 0.44216327693889873,
+        "mean_reward": 0.043976396455354776,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.6931043739160981,
+        "val_roc_auc_micro": 0.7301884190954047,
+        "val_f1_macro": 0.2789975995957341,
+        "val_f1_micro": 0.4277739009071877,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.6821957596963217,
+            "roc_auc_micro": 0.7165665102449105,
+            "f1_macro": 0.2842282016328649,
+            "f1_micro": 0.42944496707431795
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.7135181992389513,
+            "roc_auc_micro": 0.7632098055918297,
+            "f1_macro": 0.26340207888203554,
+            "f1_micro": 0.422972972972973
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.6572071319684758,
+        "test_roc_auc_micro": 0.7034133839120367,
+        "test_f1_macro": 0.27658617850909545,
+        "test_f1_micro": 0.3993055555555556,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.6487741095059624,
+            "roc_auc_micro": 0.6919898275001737,
+            "f1_macro": 0.2783353331694022,
+            "f1_micro": 0.39834831187758074
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.663791457754791,
+            "roc_auc_micro": 0.7293334882371053,
+            "f1_macro": 0.26607455645095973,
+            "f1_micro": 0.40170419963481435
+          }
+        },
+        "seconds": 240.713365489617
+      },
+      {
+        "epoch": 3,
+        "sampler_loss": 0.19891459384752647,
+        "predictor_loss": 0.39093958107278515,
+        "mean_reward": 0.05877516652077293,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.6980099692424995,
+        "val_roc_auc_micro": 0.7270999630236,
+        "val_f1_macro": 0.33834252493548833,
+        "val_f1_micro": 0.42055120789384143,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7028764415277794,
+            "roc_auc_micro": 0.7315676681604331,
+            "f1_macro": 0.357238985684586,
+            "f1_micro": 0.43698252069917204
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6796730566668882,
+            "roc_auc_micro": 0.7139849942375992,
+            "f1_macro": 0.2697187790121701,
+            "f1_micro": 0.3738562091503268
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.6596835542460572,
+        "test_roc_auc_micro": 0.7147795139248401,
+        "test_f1_macro": 0.31742669359116993,
+        "test_f1_micro": 0.40021008403361347,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.6689611831234749,
+            "roc_auc_micro": 0.7220106241196571,
+            "f1_macro": 0.34040154915368565,
+            "f1_micro": 0.42174549000487566
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6353606631706998,
+            "roc_auc_micro": 0.697711915206971,
+            "f1_macro": 0.2513297020090718,
+            "f1_micro": 0.3453416149068323
+          }
+        },
+        "seconds": 242.52574066072702
+      },
+      {
+        "epoch": 4,
+        "sampler_loss": 0.21471423916731003,
+        "predictor_loss": 0.35606766819744873,
+        "mean_reward": 0.07155440387554697,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7020348397618562,
+        "val_roc_auc_micro": 0.7103517826170154,
+        "val_f1_macro": 0.35807471120253814,
+        "val_f1_micro": 0.41133333333333333,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.6918274518224881,
+            "roc_auc_micro": 0.7067522326483264,
+            "f1_macro": 0.3721921221125216,
+            "f1_micro": 0.4306049822064057
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.7323537105407326,
+            "roc_auc_micro": 0.7175119721932199,
+            "f1_macro": 0.3080990353959356,
+            "f1_micro": 0.3537234042553192
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7055426642352841,
+        "test_roc_auc_micro": 0.7277525324937244,
+        "test_f1_macro": 0.37960788856386135,
+        "test_f1_micro": 0.4424749712785163,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7003614273974416,
+            "roc_auc_micro": 0.7274511429455719,
+            "f1_macro": 0.39936818283445863,
+            "f1_micro": 0.4620267513035593
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.721999545078754,
+            "roc_auc_micro": 0.7294302294710905,
+            "f1_macro": 0.329720796643802,
+            "f1_micro": 0.3912009512485137
+          }
+        },
+        "seconds": 243.41912224516273
+      },
+      {
+        "epoch": 5,
+        "sampler_loss": 0.2258825868119905,
+        "predictor_loss": 0.3217017785570487,
+        "mean_reward": 0.09398804912372202,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.716636127539003,
+        "val_roc_auc_micro": 0.7465432456842733,
+        "val_f1_macro": 0.5029846049502666,
+        "val_f1_micro": 0.548951048951049,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7153126163495223,
+            "roc_auc_micro": 0.743213286529593,
+            "f1_macro": 0.510387574018739,
+            "f1_micro": 0.5531760435571688
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.7051162334791953,
+            "roc_auc_micro": 0.7541873276264943,
+            "f1_macro": 0.46019519348571347,
+            "f1_micro": 0.5368639667705088
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7062090134033153,
+        "test_roc_auc_micro": 0.7363100149740199,
+        "test_f1_macro": 0.4717018058017099,
+        "test_f1_micro": 0.5361373619060296,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7116753776884667,
+            "roc_auc_micro": 0.7374406262040563,
+            "f1_macro": 0.4813345260064817,
+            "f1_micro": 0.5417363822271798
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6885868589858385,
+            "roc_auc_micro": 0.734081760036682,
+            "f1_macro": 0.4425981694560984,
+            "f1_micro": 0.5220243673851921
+          }
+        },
+        "seconds": 246.16346158273518
+      },
+      {
+        "epoch": 6,
+        "sampler_loss": 0.3686647301752909,
+        "predictor_loss": 0.2934308424298045,
+        "mean_reward": 0.12430942272836835,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7258279350990003,
+        "val_roc_auc_micro": 0.7183846369570323,
+        "val_f1_macro": 0.32203063023251927,
+        "val_f1_micro": 0.3516275548826647,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7263936629307514,
+            "roc_auc_micro": 0.724804845189563,
+            "f1_macro": 0.34595756028420954,
+            "f1_micro": 0.3817533129459735
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.727506519859113,
+            "roc_auc_micro": 0.6998520284980638,
+            "f1_macro": 0.25123413044237114,
+            "f1_micro": 0.2647058823529412
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7110647139122833,
+        "test_roc_auc_micro": 0.715857415602814,
+        "test_f1_macro": 0.2978293234045033,
+        "test_f1_micro": 0.3397652675552019,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.716022027037741,
+            "roc_auc_micro": 0.7273512654829806,
+            "f1_macro": 0.3123199361496801,
+            "f1_micro": 0.36750483558994196
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.7009886970060233,
+            "roc_auc_micro": 0.6874825236298194,
+            "f1_macro": 0.26624367712650937,
+            "f1_micro": 0.2684659090909091
+          }
+        },
+        "seconds": 243.6776892952621
+      }
+    ]
+  },
+  "note": "Plots use same-seed replay because no checkpoint was saved; CUDA nondeterminism can cause small replay differences."
+}

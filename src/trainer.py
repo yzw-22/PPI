@@ -12,16 +12,21 @@ class AlternatingTrainer:
     """
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,
-                 reinforce_baseline_coef=0.1):
+                 reinforce_baseline_coef=0.1, reinforce_gamma=1.0):
+        if not 0.0 <= reinforce_gamma <= 1.0:
+            raise ValueError("reinforce_gamma must be in [0, 1]")
         self.sampler = sampler
         self.predictor = predictor
         self.sampler_optimizer = sampler_optimizer
         self.predictor_optimizer = predictor_optimizer
         self.reinforce_baseline_coef = reinforce_baseline_coef
+        self.reinforce_gamma = reinforce_gamma
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
                            node_index=None):
         """Batch the predictor work while sampling each trajectory separately."""
+        if target_nodes.shape[0] == 0:
+            raise ValueError("target_nodes must not be empty")
         sampler_requires_grad = self._set_requires_grad(self.sampler, True)
         predictor_requires_grad = self._set_requires_grad(self.predictor, False)
         self.sampler.train()
@@ -73,14 +78,30 @@ class AlternatingTrainer:
                 step_logits, step_labels, reduction="none"
             ).mean(dim=1)
 
+        rewards_by_trajectory = [[] for _ in trajectories]
+        record_index = 0
+        for sample_index, trajectory in enumerate(trajectories):
+            for _ in trajectory.steps:
+                rewards_by_trajectory[sample_index].append(
+                    (baseline_losses[sample_index] - step_losses[record_index]).detach()
+                )
+                record_index += 1
+
+        returns_by_trajectory = [
+            self._return_to_go(rewards, self.reinforce_gamma)
+            for rewards in rewards_by_trajectory
+        ]
         policy_losses = []
         value_losses = []
         rewards = []
-        for record_index, (sample_index, step) in enumerate(step_records):
-            reward = baseline_losses[sample_index] - step_losses[record_index]
-            rewards.append(reward.detach())
-            policy_losses.append(-step.log_prob * (reward.detach() - step.value).detach())
-            value_losses.append(F.mse_loss(step.value, reward.detach()))
+        for sample_index, trajectory in enumerate(trajectories):
+            for step_index, step in enumerate(trajectory.steps):
+                reward = rewards_by_trajectory[sample_index][step_index]
+                return_to_go = returns_by_trajectory[sample_index][step_index]
+                advantage = (return_to_go - step.value).detach()
+                rewards.append(reward)
+                policy_losses.append(-step.log_prob * advantage)
+                value_losses.append(F.mse_loss(step.value, return_to_go))
 
         policy_loss = torch.stack(policy_losses).mean()
         value_loss = torch.stack(value_losses).mean()
@@ -100,7 +121,9 @@ class AlternatingTrainer:
 
     def predictor_batch_step(self, node_features, edge_index, target_nodes, labels,
                              node_index=None):
-        """Update the predictor on greedy trajectories from one batch."""
+        """Update the predictor on one final graph per greedy trajectory."""
+        if target_nodes.shape[0] == 0:
+            raise ValueError("target_nodes must not be empty")
         sampler_requires_grad = self._set_requires_grad(self.sampler, False)
         predictor_requires_grad = self._set_requires_grad(self.predictor, True)
         self.sampler.eval()
@@ -116,19 +139,15 @@ class AlternatingTrainer:
                 )
                 for target in target_nodes
             ]
-        graphs = []
-        graph_labels = []
         labels = labels.to(device=node_features.device, dtype=torch.float32)
-        for sample_index, trajectory in enumerate(trajectories):
-            sampled_graphs = [step.graph for step in trajectory.steps]
-            if not sampled_graphs:
-                sampled_graphs = [trajectory.baseline_graph]
-            graphs.extend(sampled_graphs)
-            graph_labels.extend([labels[sample_index]] * len(sampled_graphs))
+        # Match evaluation: train on the final graph only.  For a trajectory
+        # with no actions, final_graph is initial_graph (including any virtual
+        # proxy), rather than baseline_graph.
+        graphs = [trajectory.final_graph for trajectory in trajectories]
 
         logits = self._predict_graphs(node_features, graphs)
         loss = F.binary_cross_entropy_with_logits(
-            logits, torch.stack(graph_labels), reduction="mean"
+            logits, labels, reduction="mean"
         )
         self.predictor_optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -170,6 +189,18 @@ class AlternatingTrainer:
             torch.stack(targets),
             torch.cat(batches),
         )
+
+    @staticmethod
+    def _return_to_go(rewards, gamma=1.0):
+        """Compute discounted return-to-go for one trajectory."""
+        if not rewards:
+            return []
+        returns = [None] * len(rewards)
+        running = rewards[0].new_zeros(())
+        for index in range(len(rewards) - 1, -1, -1):
+            running = rewards[index] + gamma * running
+            returns[index] = running
+        return returns
 
     @staticmethod
     def _set_requires_grad(module, value):

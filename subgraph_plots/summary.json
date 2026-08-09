@@ -1,0 +1,767 @@
+{
+  "config": {
+    "root": "dataset",
+    "cache_dir": "dataset/.cache",
+    "output": null,
+    "device": "cuda",
+    "epochs": 6,
+    "batch_size": 32,
+    "eval_batch_size": 64,
+    "hidden_dim": 512,
+    "max_steps": 10,
+    "gnn_layers": 2,
+    "heads": 4,
+    "dropout": 0.1,
+    "sampler_lr": 0.0001,
+    "predictor_lr": 0.001,
+    "reinforce_baseline_coef": 0.1,
+    "reinforce_gamma": 0.95,
+    "seed": 42
+  },
+  "selection": "minimum, median, and maximum final node count among 25 evenly spaced PPI candidates per split",
+  "samples": [
+    {
+      "split": "train",
+      "ppi_index": 2,
+      "target_global": [
+        0,
+        3
+      ],
+      "relation_labels": [
+        "reaction",
+        "binding",
+        "activation",
+        "catalysis"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 2,
+      "final_nodes": 12,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 15,
+      "connected_components": 1,
+      "largest_component": 12,
+      "max_component_diameter": 4,
+      "cyclomatic_number": 4,
+      "target_edge_present": false,
+      "target_degrees": [
+        5,
+        3
+      ],
+      "degree_sequence_desc": [
+        5,
+        4,
+        4,
+        3,
+        3,
+        3,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        0,
+        3,
+        62,
+        297,
+        40,
+        207,
+        27,
+        50,
+        15,
+        763,
+        161,
+        165
+      ],
+      "image": "/root/PPI/subgraph_plots/train_1_ppi_2.png"
+    },
+    {
+      "split": "train",
+      "ppi_index": 3821,
+      "target_global": [
+        493,
+        255
+      ],
+      "relation_labels": [
+        "reaction",
+        "binding",
+        "catalysis"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 2,
+      "final_nodes": 12,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 15,
+      "connected_components": 1,
+      "largest_component": 12,
+      "max_component_diameter": 5,
+      "cyclomatic_number": 4,
+      "target_edge_present": false,
+      "target_degrees": [
+        6,
+        1
+      ],
+      "degree_sequence_desc": [
+        6,
+        4,
+        4,
+        3,
+        3,
+        3,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        493,
+        255,
+        912,
+        707,
+        915,
+        708,
+        701,
+        731,
+        569,
+        1192,
+        495,
+        515
+      ],
+      "image": "/root/PPI/subgraph_plots/train_2_ppi_3821.png"
+    },
+    {
+      "split": "train",
+      "ppi_index": 1026,
+      "target_global": [
+        612,
+        640
+      ],
+      "relation_labels": [
+        "catalysis"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 3,
+      "final_nodes": 13,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 11,
+      "connected_components": 2,
+      "largest_component": 11,
+      "max_component_diameter": 6,
+      "cyclomatic_number": 0,
+      "target_edge_present": false,
+      "target_degrees": [
+        4,
+        1
+      ],
+      "degree_sequence_desc": [
+        4,
+        4,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        612,
+        640,
+        985,
+        637,
+        316,
+        126,
+        638,
+        564,
+        255,
+        675,
+        1129,
+        495,
+        515
+      ],
+      "image": "/root/PPI/subgraph_plots/train_3_ppi_1026.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 2208,
+      "target_global": [
+        208,
+        297
+      ],
+      "relation_labels": [
+        "reaction",
+        "binding",
+        "catalysis"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 2,
+      "final_nodes": 12,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 10,
+      "connected_components": 2,
+      "largest_component": 11,
+      "max_component_diameter": 2,
+      "cyclomatic_number": 0,
+      "target_edge_present": false,
+      "target_degrees": [
+        10,
+        0
+      ],
+      "degree_sequence_desc": [
+        10,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "final_global_nodes": [
+        208,
+        297,
+        207,
+        675,
+        224,
+        150,
+        265,
+        21,
+        844,
+        842,
+        156,
+        278
+      ],
+      "image": "/root/PPI/subgraph_plots/test_1_ppi_2208.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 3742,
+      "target_global": [
+        841,
+        227
+      ],
+      "relation_labels": [
+        "reaction",
+        "binding",
+        "catalysis"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 2,
+      "final_nodes": 12,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 10,
+      "connected_components": 2,
+      "largest_component": 10,
+      "max_component_diameter": 4,
+      "cyclomatic_number": 0,
+      "target_edge_present": false,
+      "target_degrees": [
+        1,
+        7
+      ],
+      "degree_sequence_desc": [
+        7,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        841,
+        227,
+        675,
+        162,
+        150,
+        265,
+        21,
+        844,
+        278,
+        31,
+        284,
+        739
+      ],
+      "image": "/root/PPI/subgraph_plots/test_2_ppi_3742.png"
+    },
+    {
+      "split": "test",
+      "ppi_index": 685,
+      "target_global": [
+        4,
+        418
+      ],
+      "relation_labels": [
+        "reaction",
+        "binding",
+        "ptmod",
+        "activation",
+        "inhibition"
+      ],
+      "sampling_steps": 10,
+      "initial_nodes": 3,
+      "final_nodes": 13,
+      "expanded_nodes": 10,
+      "final_undirected_edges": 13,
+      "connected_components": 1,
+      "largest_component": 13,
+      "max_component_diameter": 5,
+      "cyclomatic_number": 1,
+      "target_edge_present": false,
+      "target_degrees": [
+        7,
+        1
+      ],
+      "degree_sequence_desc": [
+        7,
+        4,
+        2,
+        2,
+        2,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "final_global_nodes": [
+        4,
+        418,
+        417,
+        297,
+        207,
+        232,
+        739,
+        27,
+        0,
+        284,
+        296,
+        172,
+        696
+      ],
+      "image": "/root/PPI/subgraph_plots/test_3_ppi_685.png"
+    }
+  ],
+  "training": {
+    "config": {
+      "root": "dataset",
+      "cache_dir": "dataset/.cache",
+      "output": null,
+      "device": "cuda",
+      "epochs": 6,
+      "batch_size": 32,
+      "eval_batch_size": 64,
+      "hidden_dim": 512,
+      "max_steps": 10,
+      "gnn_layers": 2,
+      "heads": 4,
+      "dropout": 0.1,
+      "sampler_lr": 0.0001,
+      "predictor_lr": 0.001,
+      "reinforce_baseline_coef": 0.1,
+      "reinforce_gamma": 0.95,
+      "seed": 42
+    },
+    "total_seconds": 774.0095309764147,
+    "epochs": [
+      {
+        "epoch": 1,
+        "sampler_loss": 0.05629281031685616,
+        "predictor_loss": 0.4966859230081641,
+        "mean_reward": 0.04534223446474892,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.6711733627332567,
+        "val_roc_auc_micro": 0.6902226245279723,
+        "val_f1_macro": 0.41604297936578044,
+        "val_f1_micro": 0.4898293515358362,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.6716533968014061,
+            "roc_auc_micro": 0.6912664712350838,
+            "f1_macro": 0.4236575605406679,
+            "f1_micro": 0.4979485266691533
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6733915421385532,
+            "roc_auc_micro": 0.686728889007057,
+            "f1_macro": 0.38824519506625893,
+            "f1_micro": 0.467651553744269
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.660078553114173,
+        "test_roc_auc_micro": 0.6950710527905467,
+        "test_f1_macro": 0.4151847734584811,
+        "test_f1_micro": 0.4955874241588527,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.6535175277957432,
+            "roc_auc_micro": 0.6895213935156236,
+            "f1_macro": 0.4175211874355949,
+            "f1_micro": 0.4953416149068323
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6744607066666758,
+            "roc_auc_micro": 0.7087121444704434,
+            "f1_macro": 0.40070823159294655,
+            "f1_micro": 0.4961904761904762
+          }
+        },
+        "seconds": 129.59153575077653
+      },
+      {
+        "epoch": 2,
+        "sampler_loss": 0.0725804601731869,
+        "predictor_loss": 0.3934823692315297,
+        "mean_reward": 0.09637990461622399,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7282958677803888,
+        "val_roc_auc_micro": 0.7557813055868282,
+        "val_f1_macro": 0.3401223049182413,
+        "val_f1_micro": 0.4153377530908439,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7294058005396113,
+            "roc_auc_micro": 0.7561348387342218,
+            "f1_macro": 0.34383712090175983,
+            "f1_micro": 0.42001478925314273
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.7197904301407126,
+            "roc_auc_micro": 0.7548026825075597,
+            "f1_macro": 0.3173903646444474,
+            "f1_micro": 0.40288713910761154
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7106431358014914,
+        "test_roc_auc_micro": 0.7514816565820073,
+        "test_f1_macro": 0.3274938924143974,
+        "test_f1_micro": 0.41333333333333333,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7115893146140196,
+            "roc_auc_micro": 0.7505175468516097,
+            "f1_macro": 0.3349642412691602,
+            "f1_micro": 0.41698449021103484
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.7041264486827312,
+            "roc_auc_micro": 0.7533522604539062,
+            "f1_macro": 0.2937455664349322,
+            "f1_micro": 0.4044526901669759
+          }
+        },
+        "seconds": 127.98996481858194
+      },
+      {
+        "epoch": 3,
+        "sampler_loss": 0.08929964417901179,
+        "predictor_loss": 0.32940490302784514,
+        "mean_reward": 0.11250000836875605,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7134478416088725,
+        "val_roc_auc_micro": 0.7372140924902653,
+        "val_f1_macro": 0.4541458414374076,
+        "val_f1_micro": 0.48756822316555487,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7164033926839917,
+            "roc_auc_micro": 0.7391460139022327,
+            "f1_macro": 0.45906616266752726,
+            "f1_micro": 0.4938682186655581
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6979248540721441,
+            "roc_auc_micro": 0.732734527672307,
+            "f1_macro": 0.4185349145664262,
+            "f1_micro": 0.47058823529411764
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.696848111336281,
+        "test_roc_auc_micro": 0.730528226809232,
+        "test_f1_macro": 0.43006722798265123,
+        "test_f1_micro": 0.4681052134194361,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7000591606543989,
+            "roc_auc_micro": 0.7344682650218862,
+            "f1_macro": 0.4435262577573952,
+            "f1_micro": 0.4819064430714916
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6846049534056882,
+            "roc_auc_micro": 0.7209271609186617,
+            "f1_macro": 0.3871450171138813,
+            "f1_micro": 0.4336818932305999
+          }
+        },
+        "seconds": 130.17014409415424
+      },
+      {
+        "epoch": 4,
+        "sampler_loss": 0.1330432438735427,
+        "predictor_loss": 0.28816117860412765,
+        "mean_reward": 0.13692764244754813,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7078601136946311,
+        "val_roc_auc_micro": 0.7373033363714814,
+        "val_f1_macro": 0.44684638706247837,
+        "val_f1_micro": 0.5201998572448251,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7206890516691715,
+            "roc_auc_micro": 0.7488692962470253,
+            "f1_macro": 0.4652634462192447,
+            "f1_micro": 0.5381008206330598
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6686298960580462,
+            "roc_auc_micro": 0.706216234733728,
+            "f1_macro": 0.38539569258947454,
+            "f1_micro": 0.47164811870694223
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7085369807582387,
+        "test_roc_auc_micro": 0.7437725341994921,
+        "test_f1_macro": 0.43951572583744886,
+        "test_f1_micro": 0.5122574823281697,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7192991898821607,
+            "roc_auc_micro": 0.7559392350254864,
+            "f1_macro": 0.45226006830992393,
+            "f1_micro": 0.5222793487574978
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6855574888378175,
+            "roc_auc_micro": 0.7139423554767685,
+            "f1_macro": 0.40637630800136515,
+            "f1_micro": 0.48864209994952046
+          }
+        },
+        "seconds": 129.57477077282965
+      },
+      {
+        "epoch": 5,
+        "sampler_loss": 0.13956909011665639,
+        "predictor_loss": 0.25768745994682846,
+        "mean_reward": 0.1470779830794855,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.6990751559423573,
+        "val_roc_auc_micro": 0.7331399597859517,
+        "val_f1_macro": 0.3976852536803958,
+        "val_f1_micro": 0.4436894853066078,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7097017785663284,
+            "roc_auc_micro": 0.740367184523123,
+            "f1_macro": 0.413078257582753,
+            "f1_micro": 0.46153846153846156
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6598174392893218,
+            "roc_auc_micro": 0.7130533975668045,
+            "f1_macro": 0.3282255829996991,
+            "f1_micro": 0.3935275080906149
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7031155079142101,
+        "test_roc_auc_micro": 0.7338546688254338,
+        "test_f1_macro": 0.39887471422400866,
+        "test_f1_micro": 0.4450616212463114,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7094082629762276,
+            "roc_auc_micro": 0.7405028771025588,
+            "f1_macro": 0.42073552256876523,
+            "f1_micro": 0.46985347105452796
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6860489522722799,
+            "roc_auc_micro": 0.7175588873609566,
+            "f1_macro": 0.3315346750376049,
+            "f1_micro": 0.3804755944931164
+          }
+        },
+        "seconds": 127.10834263078868
+      },
+      {
+        "epoch": 6,
+        "sampler_loss": 0.11799782445325187,
+        "predictor_loss": 0.23772897106521435,
+        "mean_reward": 0.15647052694887825,
+        "val_count": 1524,
+        "val_roc_auc_macro": 0.7063255667948429,
+        "val_roc_auc_micro": 0.7278021093271385,
+        "val_f1_macro": 0.42200354261581724,
+        "val_f1_micro": 0.4747572815533981,
+        "val_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1093,
+            "roc_auc_macro": 0.7208261950282855,
+            "roc_auc_micro": 0.7430362024477156,
+            "f1_macro": 0.44251179549197295,
+            "f1_micro": 0.49900640317950984
+          },
+          "NS": {
+            "count": 431,
+            "roc_auc_macro": 0.6588542951526001,
+            "roc_auc_micro": 0.6859522175784418,
+            "f1_macro": 0.3510008443154757,
+            "f1_micro": 0.4082374318594791
+          }
+        },
+        "test_count": 1538,
+        "test_roc_auc_macro": 0.7084329731439419,
+        "test_roc_auc_micro": 0.7353043763861068,
+        "test_f1_macro": 0.42177183514146027,
+        "test_f1_micro": 0.48012180680087974,
+        "test_visibility": {
+          "BS": {
+            "count": 0,
+            "roc_auc_macro": null,
+            "roc_auc_micro": null,
+            "f1_macro": null,
+            "f1_micro": null
+          },
+          "ES": {
+            "count": 1078,
+            "roc_auc_macro": 0.7226730214785216,
+            "roc_auc_micro": 0.752640554829174,
+            "f1_macro": 0.44283286681606765,
+            "f1_micro": 0.5038167938931297
+          },
+          "NS": {
+            "count": 460,
+            "roc_auc_macro": 0.6748022147512993,
+            "roc_auc_micro": 0.6919714935830523,
+            "f1_macro": 0.3675603290822181,
+            "f1_micro": 0.4223385689354276
+          }
+        },
+        "seconds": 129.57396873645484
+      }
+    ]
+  }
+}

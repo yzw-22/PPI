@@ -1,0 +1,136 @@
+{
+  "rows": [
+    {
+      "split": "train",
+      "ppi_index": 2,
+      "old_V": 12,
+      "new_V": 22,
+      "old_E": 10,
+      "new_E": 26,
+      "old_C": 2,
+      "new_C": 1,
+      "old_D": 5,
+      "new_D": 7,
+      "old_cycle": 0,
+      "new_cycle": 5,
+      "old_target_degrees": [
+        1,
+        4
+      ],
+      "new_target_degrees": [
+        4,
+        4
+      ]
+    },
+    {
+      "split": "train",
+      "ppi_index": 3821,
+      "old_V": 12,
+      "new_V": 22,
+      "old_E": 16,
+      "new_E": 34,
+      "old_C": 2,
+      "new_C": 1,
+      "old_D": 4,
+      "new_D": 5,
+      "old_cycle": 6,
+      "new_cycle": 13,
+      "old_target_degrees": [
+        6,
+        0
+      ],
+      "new_target_degrees": [
+        9,
+        1
+      ]
+    },
+    {
+      "split": "train",
+      "ppi_index": 1026,
+      "old_V": 13,
+      "new_V": 23,
+      "old_E": 11,
+      "new_E": 26,
+      "old_C": 2,
+      "new_C": 2,
+      "old_D": 5,
+      "new_D": 7,
+      "old_cycle": 0,
+      "new_cycle": 5,
+      "old_target_degrees": [
+        3,
+        1
+      ],
+      "new_target_degrees": [
+        4,
+        1
+      ]
+    },
+    {
+      "split": "test",
+      "ppi_index": 2208,
+      "old_V": 12,
+      "new_V": 22,
+      "old_E": 10,
+      "new_E": 29,
+      "old_C": 2,
+      "new_C": 2,
+      "old_D": 3,
+      "new_D": 5,
+      "old_cycle": 0,
+      "new_cycle": 9,
+      "old_target_degrees": [
+        9,
+        0
+      ],
+      "new_target_degrees": [
+        9,
+        0
+      ]
+    },
+    {
+      "split": "test",
+      "ppi_index": 3742,
+      "old_V": 12,
+      "new_V": 22,
+      "old_E": 10,
+      "new_E": 24,
+      "old_C": 2,
+      "new_C": 2,
+      "old_D": 3,
+      "new_D": 6,
+      "old_cycle": 0,
+      "new_cycle": 4,
+      "old_target_degrees": [
+        3,
+        6
+      ],
+      "new_target_degrees": [
+        2,
+        8
+      ]
+    },
+    {
+      "split": "test",
+      "ppi_index": 685,
+      "old_V": 13,
+      "new_V": 23,
+      "old_E": 12,
+      "new_E": 27,
+      "old_C": 1,
+      "new_C": 1,
+      "old_D": 3,
+      "new_D": 5,
+      "old_cycle": 0,
+      "new_cycle": 5,
+      "old_target_degrees": [
+        11,
+        1
+      ],
+      "new_target_degrees": [
+        14,
+        1
+      ]
+    }
+  ]
+}

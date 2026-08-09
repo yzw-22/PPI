@@ -13,7 +13,7 @@ class PPIPredictor(nn.Module):
     probabilities used during inference.
     """
 
-    def __init__(self, esm_dim=2560, hidden_dim=256, num_layers=2, heads=4,
+    def __init__(self, esm_dim=2560, hidden_dim=512, num_layers=3, heads=4,
                  dropout=0.1):
         super().__init__()
         if hidden_dim % heads:

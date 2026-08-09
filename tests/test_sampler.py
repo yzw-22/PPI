@@ -15,6 +15,35 @@ def global_edges(graph):
 
 
 class SubgraphSamplerTest(unittest.TestCase):
+    def test_frontier_is_restricted_to_k_hop_region(self):
+        adjacency = [
+            {2},       # 0
+            {5},       # 1
+            {0, 3},    # 2
+            {2, 4},    # 3
+            {3},       # 4
+            {1, 6},    # 5
+            {5},       # 6
+        ]
+
+        region = SubgraphSampler._k_hop_region([0, 1], adjacency, 1)
+
+        self.assertEqual(region, {0, 1, 2, 5})
+        self.assertEqual(
+            SubgraphSampler._frontier([0, 1], adjacency, region), [2, 5]
+        )
+        self.assertEqual(
+            SubgraphSampler._frontier([0, 1, 2], adjacency, region), [5]
+        )
+
+    def test_k_hop_region_starts_from_initial_proxy(self):
+        adjacency = [{2}, {2}, {0, 1, 3}, {2, 4}, {3}]
+
+        self.assertEqual(
+            SubgraphSampler._k_hop_region([0, 1, 2], adjacency, 1),
+            {0, 1, 2, 3},
+        )
+
     def test_initial_graph_contains_induced_real_edges(self):
         # Target edge 0-1 is removed; 1-2 remains a real safe edge.
         node_features = torch.tensor([

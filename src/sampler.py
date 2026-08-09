@@ -52,14 +52,18 @@ class SubgraphSampler(nn.Module):
     global protein indices; when omitted, rows are treated as global indices.
     """
 
-    def __init__(self, esm_dim=2560, hidden_dim=256, max_steps=10):
+    def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
+                 k_hops=3):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
+        if k_hops < 0:
+            raise ValueError("k_hops must be non-negative")
 
         self.esm_dim = esm_dim
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
+        self.k_hops = k_hops
         self.query_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
         self.key_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
         self.value_head = nn.Sequential(
@@ -104,13 +108,14 @@ class SubgraphSampler(nn.Module):
             selected, graph_edges, adjacency, node_features, target_local
         )
         self._add_real_edges(selected, graph_edges, adjacency)
+        allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
 
         baseline_graph = self._make_graph([u, v], set(), target_local, node_index)
         initial_graph = self._make_graph(selected, graph_edges, target_local, node_index)
         steps = []
 
         for _ in range(self.max_steps):
-            candidates = self._frontier(selected, adjacency)
+            candidates = self._frontier(selected, adjacency, allowed_nodes)
             if not candidates:
                 break
 
@@ -194,10 +199,31 @@ class SubgraphSampler(nn.Module):
         return adjacency
 
     @staticmethod
-    def _frontier(selected, adjacency):
+    def _frontier(selected, adjacency, allowed_nodes=None):
         selected_set = set(selected)
-        return sorted({neighbor for node in selected for neighbor in adjacency[node]
-                       if neighbor not in selected_set})
+        candidates = {neighbor for node in selected for neighbor in adjacency[node]
+                      if neighbor not in selected_set}
+        if allowed_nodes is not None:
+            candidates.intersection_update(allowed_nodes)
+        return sorted(candidates)
+
+    @staticmethod
+    def _k_hop_region(seeds, adjacency, k_hops):
+        """Return nodes within ``k_hops`` safe-graph hops of ``seeds``."""
+        region = set(seeds)
+        frontier = set(seeds)
+        for _ in range(k_hops):
+            next_frontier = {
+                neighbor
+                for node in frontier
+                for neighbor in adjacency[node]
+                if neighbor not in region
+            }
+            region.update(next_frontier)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return region
 
     @staticmethod
     def _add_action_edges(action, selected, graph_edges, adjacency):
