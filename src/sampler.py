@@ -64,8 +64,21 @@ class SubgraphSampler(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
         self.k_hops = k_hops
-        self.query_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
-        self.key_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
+        # State and candidate nodes use independent projections before their
+        # pairwise action score is computed.  The first MLP layer receives the
+        # concatenated pair, so it can mix state and candidate features.
+        self.state_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
+        self.neighbor_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
+        action_hidden_dim = max(1, hidden_dim // 2)
+        self.action_mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim, action_hidden_dim),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Linear(action_hidden_dim, 1),
+        )
+        for layer in self.action_mlp:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.zeros_(layer.bias)
         self.value_head = nn.Sequential(
             nn.Linear(esm_dim, hidden_dim),
             nn.ReLU(),
@@ -121,14 +134,18 @@ class SubgraphSampler(nn.Module):
 
             selected_tensor = torch.tensor(selected, device=node_features.device)
             state = node_features[selected_tensor].to(
-                dtype=self.query_proj.weight.dtype
+                dtype=self.state_proj.weight.dtype
             ).mean(dim=0)
-            query = self.query_proj(state)
+            state_repr = self.state_proj(state)
             candidate_tensor = torch.tensor(candidates, device=node_features.device)
-            keys = self.key_proj(
-                node_features[candidate_tensor].to(dtype=self.key_proj.weight.dtype)
+            candidate_repr = self.neighbor_proj(
+                node_features[candidate_tensor].to(
+                    dtype=self.neighbor_proj.weight.dtype
+                )
             )
-            scores = (keys * query).sum(dim=-1) / self.hidden_dim ** 0.5
+            state_repr = state_repr.expand(candidate_repr.shape[0], -1)
+            attention_input = torch.cat((state_repr, candidate_repr), dim=-1)
+            scores = self.action_mlp(attention_input).squeeze(-1)
             probs = torch.softmax(scores, dim=0)
             if training:
                 choice = torch.distributions.Categorical(probs).sample()

@@ -15,6 +15,12 @@ def global_edges(graph):
 
 
 class SubgraphSamplerTest(unittest.TestCase):
+    def test_action_score_uses_pairwise_mlp(self):
+        sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
+
+        self.assertEqual(sampler.action_mlp[0].in_features, 8)
+        self.assertEqual(sampler.action_mlp[-1].out_features, 1)
+
     def test_frontier_is_restricted_to_k_hop_region(self):
         adjacency = [
             {2},       # 0

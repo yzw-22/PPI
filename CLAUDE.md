@@ -10,12 +10,12 @@
 - `src/sampler.py`：为每个目标 PPI 生成可变长度的 REINFORCE 子图轨迹。
 - `src/predictor.py`：使用 GAT 编码子图并输出 7 维 PPI logits。
 - `src/trainer.py`：交替更新 Sampler 和 Predictor。
-- `src/train_shs27k.py`：SHS27k/bfs 训练、验证和测试入口。
+- `src/train_shs27k.py`：SHS27k 训练、验证和测试入口，支持 `bfs`、`dfs`、`random` 划分。
 - `tests/`：当前实现的图构建、采样安全性、final-graph 训练和 RTG 单元测试。
 
 ## 当前数据与索引约束
 
-- 支持 SHS27k、SHS148k 和 STRING；训练入口当前使用 SHS27k/bfs。
+- 支持 SHS27k、SHS148k 和 STRING；训练入口使用 SHS27k，划分由 `--split` 指定（默认 `bfs`）。
 - `PPIGraph.build_graph(split_name="train", undirected=True)` 始终返回当前 split 的局部节点图。
 - `edge_index` 使用局部节点索引；`node_index` 保存 local → global 蛋白索引；`node_feat` 与局部节点逐行对应。
 - 不存在 `remap_nodes` 可选项，split-local 是固定语义。
@@ -60,6 +60,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 - reward、return 和 Sampler loss 对所有 trajectory step 等权平均；较长轨迹因此贡献更多 step 项。
 - Predictor 更新时 Sampler 参数冻结，以贪心动作生成轨迹，只使用 `final_graph`；无动作时使用含代理的 `initial_graph`。
 - Predictor 使用 BCE with logits；目标对 readout 使用 `h_u+h_v`、`|h_u-h_v|` 和子图节点均值，端点交换保持不变。
+- Sampler 使用独立的 `Linear(esm_dim→hidden_dim)` 分别将当前子图均值和每个候选邻居投影到 hidden space；拼接两者后输入 pairwise MLP（`Linear(2*hidden_dim→action_hidden) → LeakyReLU → Linear(action_hidden→1)`），再对候选动作做 softmax。MLP Linear 权重使用 Xavier uniform 初始化，偏置为 0，LeakyReLU 负斜率为 0.2。将 LeakyReLU 逐元素置于点积之前会使 state 项对候选统一、在 softmax 中抵消，因此已移除该打分方式。
 
 ## 训练与评估接口
 
@@ -69,15 +70,16 @@ L_{sampler}=L_{policy}+\beta L_{value}
 
 ```bash
 python -m src.train_shs27k \
-  --epochs 6 \
+  --split random \
+  --epochs 10 \
   --hidden-dim 512 \
-  --max-steps 20 \
+  --max-steps 10 \
   --k-hops 3 \
   --reinforce-gamma 0.95 \
   --gnn-layers 3
 ```
 
-每个 epoch 报告训练 Sampler loss、Predictor loss、mean reward、验证集指标和测试集指标。验证/测试指标包括 Macro/Micro ROC-AUC 与 F1；F1 当前固定使用 0.5 阈值。
+每个 epoch 报告训练 Sampler loss、Predictor loss、mean reward、验证集指标和测试集指标。验证/测试指标包括 Macro/Micro ROC-AUC 与 F1。F1 始终使用固定 0.5 阈值，与同类论文的报告约定保持一致；不在验证集或测试集上调节阈值。
 
 测试 PPI 还按两端节点是否出现在训练图中分组：
 
@@ -87,30 +89,92 @@ python -m src.train_shs27k \
 
 空分组报告 `count=0` 和空指标。SHS27k/bfs 测试集当前 BS 为 0，这是该 split 的结构性结果。
 
-## 最近实验进展
+## 历史基准结果
 
-配置均为 hidden 512、`k_hops=3`、gamma 0.95、GAT 3 层、6 Epoch、seed 42：
+以下是改用当前 attention sampler 之前的历史结果，仅用于后续消融对照，
+不是当前实现的结果。配置为 `hidden_dim=512`、`max_steps=10`、`k_hops=3`、
+`reinforce_gamma=0.95`、3 层 GAT、seed 42；每个划分按验证集 Macro-AUC
+选择 Epoch，再报告对应测试集结果。
 
-| max_steps | 最佳验证 Macro-AUC（epoch） | 对应测试 Macro-AUC | 对应测试 Micro-AUC | 平均最终节点数（抽样样本） |
+| 划分 | Q/K | train/val/test PPI | Epoch | 最佳验证 Macro-AUC | 测试 Macro-AUC | 测试 Micro-AUC | 测试 Macro-F1 | 测试 Micro-F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| BFS | 双层 MLP | 4562/1524/1538 | 9/10 | 0.7413 | 0.7173 | 0.7295 | 0.4763 | 0.5004 |
+| DFS | 单层线性 | 4571/1524/1529 | 9/10 | 0.8012 | 0.8070 | 0.8370 | 0.5909 | 0.6473 |
+| random | 单层线性 | 4574/1525/1525 | 10/10 | 0.8743 | 0.8809 | 0.8952 | 0.6552 | 0.7034 |
+
+历史结果显示 random 的整体性能最高，DFS 次之，BFS 最低。主要原因之一是
+划分结构不同：BFS/DFS 测试集均为 BS=0、ES/NS 分布为
+DFS 1215/314、BFS 1078/460；random 则为 BS/ES/NS=1377/138/10。
+因此整体指标不能脱离节点可见性分布直接比较。DFS 第 10 Epoch 的
+Predictor loss 为 0.2299、Sampler loss 为 0.1894，但其验证性能已从第 9
+Epoch 回落，正式使用时应保存验证集最佳 checkpoint。
+
+此前独立 `state_proj/neighbor_proj` 线性 attention sampler 已完成 SHS27k/BFS
+10 Epoch 训练，现作为 pairwise MLP 改造前基线。配置为 `hidden_dim=512`、
+`max_steps=10`、`k_hops=3`、`reinforce_gamma=0.95`、3 层 GAT、seed 42。
+第 9 Epoch 达到最佳验证
+Macro-AUC 0.7266；对应测试 Macro-AUC/Micro-AUC 为 0.7192/0.7530，
+Macro-F1/Micro-F1 为 0.4974/0.5432。测试 ES（1078 对）AUC 为
+0.7307/0.7657、F1 为 0.5175/0.5629；NS（460 对）AUC 为
+0.6974/0.7221、F1 为 0.4447/0.4929；BS 样本数为 0。
+
+第 10 Epoch 验证 Macro-AUC 降至 0.6963，而 Predictor loss 继续从第 9
+Epoch 的 0.2262 降至 0.2127，显示后期存在过拟合或 REINFORCE 采样波动。
+当前结果仍是单 seed，需多 seed 和严格 checkpoint 对照后才能判断 attention
+打分相对历史 Query/Key 方案的稳定收益。
+
+当前 pairwise MLP sampler 已完成同配置的 SHS27k/BFS 10 Epoch 训练：
+`hidden_dim=512`、`max_steps=10`、`k_hops=3`、`reinforce_gamma=0.95`、
+3 层 GAT、seed 42。第 9 Epoch 验证 Macro-AUC 最佳，为 `0.7395`；对应
+验证 Micro-AUC/Macro-F1/Micro-F1 为 `0.7563/0.5070/0.5576`。对应测试集
+Macro-AUC/Micro-AUC/Macro-F1/Micro-F1 为
+`0.7347/0.7607/0.5192/0.5629`。测试 ES（1078 对）为
+`0.7471/0.7757/0.5455/0.5853`，NS（460 对）为
+`0.7045/0.7224/0.4542/0.5078`，BS 为 0 对。
+
+该实验每个 epoch 的训练损失如下；Predictor loss 持续下降，但验证性能在
+第 9 Epoch 后明显回落，仍表现出交替训练中的过拟合或 REINFORCE 波动：
+
+| Epoch | Sampler loss | Predictor loss | mean reward | Val Macro-AUC |
 |---:|---:|---:|---:|---:|
-| 10 | 0.7219（3） | 0.7031 | 0.7299 | 12.33 |
-| 20 | 0.7258（6） | 0.7111 | 0.7159 | 22.33 |
+| 1 | -0.0119 | 0.5236 | 0.0154 | 0.6413 |
+| 2 | 0.0472 | 0.4346 | 0.0451 | 0.7211 |
+| 3 | 0.0550 | 0.3800 | 0.0560 | 0.6774 |
+| 4 | 0.0615 | 0.3399 | 0.0699 | 0.7363 |
+| 5 | 0.0841 | 0.3048 | 0.0809 | 0.7091 |
+| 6 | 0.0853 | 0.2785 | 0.0871 | 0.7299 |
+| 7 | 0.1153 | 0.2581 | 0.1007 | 0.6861 |
+| 8 | 0.1289 | 0.2419 | 0.1053 | 0.7139 |
+| 9 | 0.1508 | 0.2345 | 0.1146 | 0.7395 |
+| 10 | 0.1409 | 0.2149 | 0.1249 | 0.6898 |
 
-20 步显著增加子图规模、边数、环数和直径，但仍不能消除单侧扩展；测试样本中仍可能有一个目标孤立。单个 seed、不同最佳 epoch 和 F1 波动意味着不能据此断言 20 步稳定优于 10 步。
+实验原始结果保存在 `/tmp/shs27k_bfs_steps10_gamma095_gat3_pairwise_mlp.json`，
+未纳入项目代码库。该结果是单 seed，不能单独证明 pairwise MLP 相对其他
+sampler 架构的稳定优势。
 
-子图图像和结构摘要保存在：
+为检查随机性，使用相同配置更换为 seed 123 再训练 10 Epoch。最佳验证
+Macro-AUC 出现在 Epoch 10，为 `0.7347`；对应验证
+Micro-AUC/Macro-F1/Micro-F1 为 `0.7506/0.4797/0.5365`。对应测试集
+Macro-AUC/Micro-AUC/Macro-F1/Micro-F1 为
+`0.7216/0.7452/0.4732/0.5184`。测试 ES（1078 对）为
+`0.7269/0.7528/0.4929/0.5357`，NS（460 对）为
+`0.7205/0.7259/0.4233/0.4733`，BS 仍为 0 对。原始结果保存在
+`/tmp/shs27k_bfs_steps10_gamma095_gat3_pairwise_mlp_seed123.json`。
 
-- [subgraph_plots_k3_gat3](subgraph_plots_k3_gat3/)
-- [subgraph_plots_k3_gat3_steps20](subgraph_plots_k3_gat3_steps20/)
+两个 seed 的最佳验证 Macro-AUC 为 `0.7395/0.7347`，对应测试
+Macro-AUC 为 `0.7347/0.7216`；最佳 Epoch 分别为 9 和 10，说明当前
+REINFORCE 训练仍有明显随机波动，后续应报告多 seed 均值和标准差。
 
 ## 已知问题与后续方向
 
 - 训练脚本每个 epoch 都评估测试集，严格实验应只用验证集选择 checkpoint，最后测试一次；当前也没有 checkpoint 保存功能。
 - Sampler 的 Python set 邻接、重复 tensor 构造、代理相似度扫描和候选投影仍是 STRING 上的性能瓶颈。
+- 当前 pairwise MLP sampler 仅完成 BFS seed=42 和 seed=123 两次实验；候选节点逐一拼接并经过 MLP，单次实验约 25 分钟，仍需关注运行时和更多 seed 的稳定性。
 - Sampler 仍可能偏向某一目标侧；k-hop 限制只限制区域，不提供双目标平衡保证。
 - 没有 STOP 动作，达到 frontier 为空或动作上限才结束；长轨迹会增加计算量和 step loss 权重。
-- F1 使用固定阈值，类别不均衡尚未通过 class weight 或验证集阈值校准处理。
-- 当前结果只有单个随机种子，尚未进行多 seed 置信区间和严格消融。
+- F1 按同类论文惯例使用固定 0.5 阈值；类别不均衡尚未通过 class weight 等训练策略处理，不进行验证集阈值校准。
+- NS 子集在不同划分中的样本量差异很大；样本过少或某类别只有单一取值时，Macro-AUC 不可定义。
+- 当前 pairwise MLP 已完成两个随机种子，但尚未有足够 seed 计算稳定置信区间或完成严格消融；历史表中的不同 sampler 架构不能直接进行跨 split 的纯性能比较。详细实验汇总见 [experiments/SHS27K_BFS_pairwise_MLP.md](experiments/SHS27K_BFS_pairwise_MLP.md)。
 
 ## 验证
 

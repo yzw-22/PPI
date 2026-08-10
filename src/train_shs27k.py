@@ -1,4 +1,4 @@
-"""Run an SHS27k/bfs alternating-training experiment."""
+"""Run an SHS27k alternating-training experiment."""
 
 import argparse
 import json
@@ -93,7 +93,7 @@ def run(args):
 
     device = torch.device(args.device)
     graph = PPIGraph(
-        "SHS27k", "bfs", root=args.root, device=device, cache_dir=args.cache_dir
+        "SHS27k", args.split, root=args.root, device=device, cache_dir=args.cache_dir
     )
     train_graph = graph.build_graph("train", undirected=True)
     val_graph = graph.build_graph("val", undirected=True)
@@ -194,6 +194,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="dataset")
     parser.add_argument("--cache-dir", default="dataset/.cache")
+    parser.add_argument("--split", choices=["bfs", "dfs", "random"], default="bfs")
     parser.add_argument(
         "--output", default=None,
         help="optional JSON path for saving experiment metrics",

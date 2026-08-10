@@ -15,6 +15,7 @@
   - `node_feat`：当前 split 节点的 embedding。
 - split 节点始终局部化，不再提供或支持 `remap_nodes` 参数。
 - `get_dataloader()` 是公共 DataLoader 接口；当前训练入口为了每个 epoch 使用 `torch.randperm`，手动按 batch 更新。
+- `train_shs27k` 通过 `--split {bfs,dfs,random}` 选择 SHS27k 划分，默认是 `bfs`。
 
 ## SubgraphSampler
 
@@ -31,7 +32,9 @@
 ### 轨迹与动作
 
 - 状态是当前已选节点 embedding 的均值。
-- Query、Key 线性投影得到动作 score，使用缩放点积。
+- 当前子图 state 是已选节点 ESM embedding 的均值。state 使用独立的 `state_proj: Linear(esm_dim→hidden_dim)`，每个候选邻居使用独立的 `neighbor_proj: Linear(esm_dim→hidden_dim)`，分别得到 `state_repr` 和 `neighbor_repr`。
+- 对每个候选构造 `[state_repr || neighbor_repr]`，输入两层 pairwise MLP：`Linear(2*hidden_dim→action_hidden) → LeakyReLU(0.2) → Linear(action_hidden→1)`，得到动作 score，再在候选集合内 softmax。第一层作用于完整拼接向量，因此可混合 state 与 candidate 特征；不能将 LeakyReLU 先逐元素作用于拼接向量后再与单个向量点积，否则 state 项会在候选 softmax 中抵消。
+- pairwise MLP 的 Linear 权重使用 Xavier uniform 初始化、偏置初始化为 0；`state_proj`、`neighbor_proj` 和 action MLP 都参与 `log_prob` 的反向传播。该结构替换了旧的 Query/Key 缩放点积及独立投影线性打分实现。
 - 训练时从 `Categorical(softmax(scores))` 随机采样并记录 `log_prob`；评估时用 `argmax`，其 `log_prob` 为零标量。
 - Value 由独立的两层 MLP 从状态估计。
 - `initial_graph` 的目标节点和代理作为 k-hop 区域种子；区域在删除目标边后的安全邻接上计算，默认 `k_hops=3`。
@@ -39,6 +42,21 @@
 - 选中节点后加入它与当前已选节点之间的全部真实安全边，再生成一个 `SamplingStep`。
 - 轨迹在 `max_steps` 次动作后或 frontier 为空时结束；没有 STOP 动作。
 - 当前没有双目标平衡约束，因此 k-hop 限制不能保证两端都扩展或最终图连通。
+
+### Pairwise MLP BFS 实验
+
+- 配置：SHS27k BFS，`hidden_dim=512`、`max_steps=10`、`k_hops=3`、
+  `reinforce_gamma=0.95`、3 层 GAT、seed 42、10 Epoch。
+- 验证 Macro-AUC 最佳为 Epoch 9 的 `0.7395`；对应测试
+  Macro/Micro-AUC 为 `0.7347/0.7607`，Macro/Micro-F1 为
+  `0.5192/0.5629`。
+- 测试 ES（1078）Macro/Micro-AUC 为 `0.7471/0.7757`，Macro/Micro-F1 为
+  `0.5455/0.5853`；NS（460）为 `0.7045/0.7224`、`0.4542/0.5078`；
+  BS 为 0。第 10 Epoch 验证 Macro-AUC 回落到 `0.6898`。
+- 相同配置的 seed 123 实验在 Epoch 10 达到最佳验证 Macro-AUC `0.7347`；
+  对应测试 Macro/Micro-AUC 为 `0.7216/0.7452`，Macro/Micro-F1 为
+  `0.4732/0.5184`。两次实验的完整汇总见
+  [`experiments/SHS27K_BFS_pairwise_MLP.md`](../experiments/SHS27K_BFS_pairwise_MLP.md)。
 
 ## PPIPredictor
 
@@ -84,7 +102,7 @@
 ## 评估
 
 - `evaluate()` 在 val/test split 上使用 greedy Sampler 和每条 trajectory 的 `final_graph`。
-- logits 经 sigmoid 得到概率；报告 Macro/Micro ROC-AUC 和固定 0.5 阈值的 Macro/Micro F1。
+- logits 经 sigmoid 得到概率；报告 Macro/Micro ROC-AUC 和固定 0.5 阈值的 Macro/Micro F1。该阈值遵循同类论文的评估约定，不在验证集或测试集上调节。
 - 额外按测试 PPI 两端相对训练节点集合的可见性分组：
   - BS：两端都在训练节点集合；
   - ES：恰好一端在训练节点集合；
