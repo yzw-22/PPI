@@ -168,9 +168,11 @@ class PPIGraph:
 
         Returns a dict with:
             edge_index  : LongTensor [2, E]   local node indices of each edge (u -> v)
-            edge_label  : FloatTensor [E, 7]  multi-hot label of each edge
             node_index  : LongTensor [N]      global protein indices of the graph's nodes
             node_feat   : Tensor   [N, 2560]  ESM-2 embeddings of the nodes
+
+        Per-ppi multi-hot labels are not included here; the trainer reads them
+        directly from ``ppi_labels`` (see ``run`` in ``train_shs27k``).
 
         ``node_index`` is sorted and ``edge_index`` always refers to *local*
         node ids (0..N-1).  The graph and its feature/proxy candidate pool
@@ -179,7 +181,6 @@ class PPIGraph:
         ppi_idx = self.get_ppi_indices(split_name)
         u = self.ppi[ppi_idx, 0]
         v = self.ppi[ppi_idx, 1]
-        labels = self.ppi_labels[ppi_idx]  # [E, 7]
 
         # Each undirected PPI pair appears once in ppi_list; add the reverse
         # edge (v, u) so the graph is undirected for message passing.
@@ -187,7 +188,6 @@ class PPIGraph:
             u_orig, v_orig = u, v
             u = torch.cat([u_orig, v_orig])
             v = torch.cat([v_orig, u_orig])
-            labels = labels.repeat(2, 1)
 
         nodes = torch.unique(torch.cat([u, v]))
         node_index = nodes
@@ -201,7 +201,6 @@ class PPIGraph:
 
         return {
             "edge_index": edge_index,
-            "edge_label": labels,
             "node_index": node_index,
             "node_feat": node_feat,
         }

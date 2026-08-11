@@ -87,7 +87,9 @@ python -m src.train_shs27k \
 - ES（either seen）：恰好一端在训练节点集合中；
 - NS（neither seen）：两端都不在训练节点集合中。
 
-空分组报告 `count=0` 和空指标。SHS27k/bfs 测试集当前 BS 为 0，这是该 split 的结构性结果。
+空分组报告 `count=0` 和 `None` 指标；当某类别在子集中只有单一取值时，Macro-AUC 不可定义，同样报告 `None` 而不是 NaN（此时验证集最佳 checkpoint 选择会跳过该 epoch）。SHS27k/bfs 测试集当前 BS 为 0，这是该 split 的结构性结果。
+
+训练入口通过 `--checkpoint-dir DIR`（可选）启用验证集最佳 checkpoint：每个 epoch 结束时若验证 Macro-AUC 刷新最优，保存 `best_{epoch}.pt`（Sampler/Predictor 及各自优化器状态）；训练结束后加载该 checkpoint 回放一次测试集，结果写入输出 JSON 的 `best_checkpoint_test`，便于第三方按"最佳验证 epoch"复核。不传该参数则不保存、不回放，但输出仍包含 `best_epoch`/`best_val_macro_auc`。
 
 ## 历史基准结果
 
@@ -167,7 +169,7 @@ REINFORCE 训练仍有明显随机波动，后续应报告多 seed 均值和标�
 
 ## 已知问题与后续方向
 
-- 训练脚本每个 epoch 都评估测试集，严格实验应只用验证集选择 checkpoint，最后测试一次；当前也没有 checkpoint 保存功能。
+- 训练脚本每个 epoch 都评估测试集；严格实验应只用验证集选择 checkpoint，最后测试一次。已通过 `--checkpoint-dir` 支持按验证集 Macro-AUC 保存最佳 checkpoint 并在训练结束后回放一次测试集；测试集的逐 epoch 输出仍保留。
 - Sampler 的 Python set 邻接、重复 tensor 构造、代理相似度扫描和候选投影仍是 STRING 上的性能瓶颈。
 - 当前 pairwise MLP sampler 仅完成 BFS seed=42 和 seed=123 两次实验；候选节点逐一拼接并经过 MLP，单次实验约 25 分钟，仍需关注运行时和更多 seed 的稳定性。
 - Sampler 仍可能偏向某一目标侧；k-hop 限制只限制区域，不提供双目标平衡保证。
