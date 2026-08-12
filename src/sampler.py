@@ -47,9 +47,11 @@ class SubgraphSampler(nn.Module):
     """Select a bounded neighborhood around one target PPI pair.
 
     ``node_features`` and ``edge_index`` describe the current data split.  The
-    edge connecting the target pair is removed in both directions before any
-    adjacency is built.  ``node_index`` maps rows in ``node_features`` to
-    global protein indices; when omitted, rows are treated as global indices.
+    edge connecting the target pair is excluded in both directions while
+    sampling: lazily from a shared immutable split-level adjacency when one is
+    supplied, or by removing it from ``edge_index`` when building standalone.
+    ``node_index`` maps rows in ``node_features`` to global protein indices;
+    when omitted, rows are treated as global indices.
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
@@ -95,6 +97,10 @@ class SubgraphSampler(nn.Module):
             target_nodes: two global protein indices ``(u, v)``.
             node_index: optional global id for each feature row.
             training: use stochastic actions when true; defaults to module mode.
+            adjacency: optional shared split-level adjacency (``tuple`` of
+                ``frozenset``, see :meth:`_build_adjacency`).  When given, the
+                target edge is excluded lazily per target; when omitted it is
+                built from ``edge_index`` with the target edge already removed.
 
         Returns:
             ``SamplingTrajectory``.  Each step contains the graph *after* its
@@ -109,10 +115,14 @@ class SubgraphSampler(nn.Module):
             safe_edges = self._remove_target_edges(edge_index, target_local)
             adjacency = self._build_adjacency(safe_edges, node_features.shape[0])
         else:
-            adjacency = [set(neighbors) for neighbors in adjacency]
+            # ``adjacency`` is a shared immutable split-level structure; exclude
+            # the target edge lazily instead of deep-copying every neighbor set
+            # (O(E) per target).  Only the two target rows change, so patch the
+            # shallow list copy in place.
             u, v = target_local.tolist()
-            adjacency[u].discard(v)
-            adjacency[v].discard(u)
+            adjacency = list(adjacency)
+            adjacency[u] = adjacency[u] - {v}
+            adjacency[v] = adjacency[v] - {u}
 
         u, v = target_local.tolist()
         selected = [u, v]
@@ -127,8 +137,19 @@ class SubgraphSampler(nn.Module):
         initial_graph = self._make_graph(selected, graph_edges, target_local, node_index)
         steps = []
 
+        # The frontier is maintained incrementally instead of being rebuilt
+        # from every selected node each step: seed it with the initially
+        # selected nodes' neighbors (including any proxy), then each step only
+        # add the newly chosen node's neighbors.  The k-hop region filter is
+        # applied at candidate time.
+        selected_set = set(selected)
+        frontier = set()
+        for node in selected:
+            frontier.update(adjacency[node])
+        frontier.difference_update(selected_set)
+
         for _ in range(self.max_steps):
-            candidates = self._frontier(selected, adjacency, allowed_nodes)
+            candidates = sorted(frontier & allowed_nodes)
             if not candidates:
                 break
 
@@ -159,6 +180,10 @@ class SubgraphSampler(nn.Module):
             value = self.value_head(state).squeeze(-1)
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
+            selected_set.add(action_int)
+            frontier.discard(action_int)
+            frontier.update(adjacency[action_int])
+            frontier.difference_update(selected_set)
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
             steps.append(SamplingStep(graph, log_prob, value))
 
@@ -186,15 +211,16 @@ class SubgraphSampler(nn.Module):
         target_nodes = torch.as_tensor(
             target_nodes, device=node_features.device, dtype=torch.long
         )
-        lookup = {int(global_id): local for local, global_id in enumerate(node_index.tolist())}
-        try:
-            target_local = torch.tensor(
-                [lookup[int(target_nodes[0])], lookup[int(target_nodes[1])]],
-                device=node_features.device,
-                dtype=torch.long,
-            )
-        except KeyError as exc:
-            raise ValueError("target_nodes must be present in node_index") from exc
+        # ``node_index`` is sorted (``PPIGraph.build_graph`` emits ``torch.unique``
+        # ids, and the default is ``arange``), so binary search resolves
+        # global -> local in O(log N) instead of building an O(N) dict per
+        # target.  The membership guard keeps this correct even if a caller
+        # passes an unsorted ``node_index``.
+        target_local = torch.searchsorted(node_index, target_nodes)
+        if target_local.max() >= node_index.numel():
+            raise ValueError("target_nodes must be present in node_index")
+        if not torch.equal(node_index[target_local], target_nodes):
+            raise ValueError("target_nodes must be present in node_index")
         return node_features, edge_index.to(device=node_features.device), node_index, target_local
 
     @staticmethod
@@ -208,12 +234,18 @@ class SubgraphSampler(nn.Module):
 
     @staticmethod
     def _build_adjacency(edge_index, num_nodes):
+        """Return the undirected adjacency of ``edge_index`` as an immutable
+        ``tuple`` of ``frozenset``.
+
+        Immutability lets one structure be built once per split and shared by
+        every target; each target excludes its own edge lazily in ``sample``.
+        """
         adjacency = [set() for _ in range(num_nodes)]
         for source, target in edge_index.t().tolist():
             if source != target:
                 adjacency[source].add(target)
                 adjacency[target].add(source)
-        return adjacency
+        return tuple(frozenset(neighbors) for neighbors in adjacency)
 
     @staticmethod
     def _frontier(selected, adjacency, allowed_nodes=None):

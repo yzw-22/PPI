@@ -170,7 +170,7 @@ REINFORCE 训练仍有明显随机波动，后续应报告多 seed 均值和标�
 ## 已知问题与后续方向
 
 - 训练脚本每个 epoch 都评估测试集；严格实验应只用验证集选择 checkpoint，最后测试一次。已通过 `--checkpoint-dir` 支持按验证集 Macro-AUC 保存最佳 checkpoint 并在训练结束后回放一次测试集；测试集的逐 epoch 输出仍保留。
-- Sampler 的 Python set 邻接、重复 tensor 构造、代理相似度扫描和候选投影仍是 STRING 上的性能瓶颈。
+- STRING 上的主要性能瓶颈是逐 target 的 Python set k-hop BFS（k=3 时区域常饱和近整个分量）。邻接表已提升为 split 级构建一次的不可变共享结构（`tuple[frozenset]`），目标边改为每 target 惰性排除，不再深拷贝 O(E) 邻接；global→local 用二分查找替代每 target O(N) dict；frontier 增量维护。重复 tensor 构造、代理相似度扫描和候选投影仍是次要开销。
 - 当前 pairwise MLP sampler 仅完成 BFS seed=42 和 seed=123 两次实验；候选节点逐一拼接并经过 MLP，单次实验约 25 分钟，仍需关注运行时和更多 seed 的稳定性。
 - Sampler 仍可能偏向某一目标侧；k-hop 限制只限制区域，不提供双目标平衡保证。
 - 没有 STOP 动作，达到 frontier 为空或动作上限才结束；长轨迹会增加计算量和 step loss 权重。

@@ -23,17 +23,22 @@ class AlternatingTrainer:
         self.reinforce_gamma = reinforce_gamma
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
-                           node_index=None):
-        """Batch the predictor work while sampling each trajectory separately."""
+                           node_index=None, adjacency=None):
+        """Batch the predictor work while sampling each trajectory separately.
+
+        ``adjacency`` is a shared immutable split-level adjacency; when omitted
+        it is built from ``edge_index`` each call.
+        """
         if target_nodes.shape[0] == 0:
             raise ValueError("target_nodes must not be empty")
         sampler_requires_grad = self._set_requires_grad(self.sampler, True)
         predictor_requires_grad = self._set_requires_grad(self.predictor, False)
         self.sampler.train()
         self.predictor.eval()
-        adjacency = self.sampler._build_adjacency(
-            edge_index, node_features.shape[0]
-        )
+        if adjacency is None:
+            adjacency = self.sampler._build_adjacency(
+                edge_index, node_features.shape[0]
+            )
         trajectories = [
             self.sampler.sample(
                 node_features, edge_index, target, node_index,
@@ -120,7 +125,7 @@ class AlternatingTrainer:
         }
 
     def predictor_batch_step(self, node_features, edge_index, target_nodes, labels,
-                             node_index=None):
+                             node_index=None, adjacency=None):
         """Update the predictor on one final graph per greedy trajectory."""
         if target_nodes.shape[0] == 0:
             raise ValueError("target_nodes must not be empty")
@@ -128,9 +133,10 @@ class AlternatingTrainer:
         predictor_requires_grad = self._set_requires_grad(self.predictor, True)
         self.sampler.eval()
         self.predictor.train()
-        adjacency = self.sampler._build_adjacency(
-            edge_index, node_features.shape[0]
-        )
+        if adjacency is None:
+            adjacency = self.sampler._build_adjacency(
+                edge_index, node_features.shape[0]
+            )
         with torch.no_grad():
             trajectories = [
                 self.sampler.sample(
@@ -157,13 +163,15 @@ class AlternatingTrainer:
         return {"predictor_loss": loss.detach()}
 
     def alternating_batch_step(self, node_features, edge_index, target_nodes,
-                               labels, node_index=None):
+                               labels, node_index=None, adjacency=None):
         """Run one batched sampler update and one batched predictor update."""
         sampler_metrics = self.sampler_batch_step(
-            node_features, edge_index, target_nodes, labels, node_index
+            node_features, edge_index, target_nodes, labels, node_index,
+            adjacency=adjacency,
         )
         predictor_metrics = self.predictor_batch_step(
-            node_features, edge_index, target_nodes, labels, node_index
+            node_features, edge_index, target_nodes, labels, node_index,
+            adjacency=adjacency,
         )
         return {**sampler_metrics, **predictor_metrics}
 

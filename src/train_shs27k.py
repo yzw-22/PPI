@@ -150,6 +150,12 @@ def run(args):
         reinforce_gamma=args.reinforce_gamma,
     )
 
+    # Build the split-level adjacency once instead of once per batch; each
+    # target excludes its own edge lazily inside ``SubgraphSampler.sample``.
+    train_adjacency = sampler._build_adjacency(
+        train_graph["edge_index"], train_graph["node_feat"].shape[0]
+    )
+
     results = []
     experiment_start = time.perf_counter()
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else None
@@ -169,6 +175,7 @@ def run(args):
                 train_targets[batch_indices],
                 train_labels[batch_indices],
                 train_graph["node_index"],
+                adjacency=train_adjacency,
             )
             seen += batch_size
             for key in totals:

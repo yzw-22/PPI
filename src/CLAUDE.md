@@ -24,7 +24,8 @@
 
 - `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None)` 的拓扑和特征必须来自同一个 split。
 - `node_index` 将目标的 global protein index 映射到当前图的局部行号。
-- 每个目标采样前删除目标边的两个方向；目标边不会进入 baseline、initial 或 step graph。
+- 每个目标采样前排除目标边的两个方向；目标边不会进入 baseline、initial 或 step graph。
+- 邻接表按 split 构建一次并共享（不可变 `tuple[frozenset]`），目标边在采样时惰性排除，避免每 target 深拷贝 O(E) 邻接；目标局部行号用 `torch.searchsorted` 在有序 `node_index` 上二分定位，替代每 target O(N) dict 查找。
 - `baseline_graph` 只包含两个目标节点且无边。
 - 删除目标边后，安全邻接为空的目标被视为孤立节点。
 - 孤立目标从当前 split 的非目标节点中按余弦相似度选择代理；代理不能是目标节点，两个目标可以共享代理。
