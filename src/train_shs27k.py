@@ -292,7 +292,7 @@ def parse_args():
     parser.add_argument("--eval-batch-size", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=3)
-    parser.add_argument("--k-hops", type=int, default=3)
+    parser.add_argument("--k-hops", type=int, default=2)
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)

@@ -40,7 +40,7 @@
 - pairwise MLP 的 Linear 权重使用 Xavier uniform 初始化、偏置初始化为 0；`state_proj`、`neighbor_proj` 和 action MLP 都参与 `log_prob` 的反向传播。该结构替换了旧的 Query/Key 缩放点积及独立投影线性打分实现。
 - 训练时从 `Categorical(softmax(scores))` 随机采样并记录 `log_prob`；评估时用 `argmax`，其 `log_prob` 为零标量。
 - Value 由独立的两层 MLP 从状态估计。
-- `initial_graph` 的目标节点和代理作为 k-hop 区域种子；区域在删除目标边后的安全邻接上计算，默认 `k_hops=3`。
+- `initial_graph` 的目标节点和代理作为 k-hop 区域种子；区域在删除目标边后的安全邻接上计算，默认 `k_hops=2`。
 - 每一步候选为 `frontier(selected, adjacency) ∩ allowed_nodes`，其中 `allowed_nodes` 是上述安全图 k-hop 区域。
 - 选中节点后加入它与当前已选节点之间的全部真实安全边，再生成一个 `SamplingStep`。
 - 轨迹在 `max_steps` 次动作后或 frontier 为空时结束；没有 STOP 动作。

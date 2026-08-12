@@ -28,8 +28,8 @@
 - 目标节点只有在安全邻接为空时才会获得虚拟代理；代理从当前 split 的非目标节点中按余弦相似度选择，两个目标可以共享代理。
 - `baseline_graph` 只含两个目标节点且无边。
 - `initial_graph` 包含目标节点、必要的代理以及已选节点之间的真实安全边；虚拟边和真实边都提供给 Predictor，当前没有 edge type。
-- 采样区域以 `initial_graph` 的全部节点为种子，在删除目标边后的安全图上计算 `k_hops` 邻域，默认 `k_hops=3`。
-- 每一步的候选为当前 frontier 与该 3-hop 区域的交集；动作数最多为 `max_steps`。`max_steps` 是动作上限，不是 hop 深度，也没有 STOP 动作。
+- 采样区域以 `initial_graph` 的全部节点为种子，在删除目标边后的安全图上计算 `k_hops` 邻域，默认 `k_hops=2`。
+- 每一步的候选为当前 frontier 与该 `k_hops` 区域的交集；动作数最多为 `max_steps`。`max_steps` 是动作上限，不是 hop 深度，也没有 STOP 动作。
 - 训练时使用 Categorical 随机动作并记录可导的 `log_prob`；评估和 Predictor 更新使用贪心动作。
 - 当前未实现双目标平衡扩展；k-hop 限制本身不能保证两个目标处于同一连通分量或都获得邻居。
 
@@ -65,7 +65,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 
 ## 训练与评估接口
 
-训练入口参数的源码默认值与实验配置分开：当前 CLI 默认是 hidden 256、GAT 2 层、`max_steps=3`、`k_hops=3`、gamma 1.0；复现实验必须显式传入完整配置。
+训练入口参数的源码默认值与实验配置分开：当前 CLI 默认是 hidden 256、GAT 2 层、`max_steps=3`、`k_hops=2`、gamma 1.0；复现实验必须显式传入完整配置。
 
 典型实验命令：
 
