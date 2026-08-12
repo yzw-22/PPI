@@ -17,7 +17,13 @@ from .trainer import AlternatingTrainer
 
 
 def _metrics(labels, probabilities):
-    """Return multi-label metrics for one evaluation subset."""
+    """Return multi-label metrics for one evaluation subset.
+
+    A subset whose ROC-AUC is undefined reports ``None`` (the same convention
+    as an empty group) instead of ``NaN``: Macro-AUC is undefined when any
+    class has a single label value, and Micro-AUC is undefined when no
+    positive/negative example exists at all.
+    """
     if len(labels) == 0:
         return {
             "count": 0,
@@ -27,10 +33,22 @@ def _metrics(labels, probabilities):
             "f1_micro": None,
         }
     predictions = probabilities >= 0.5
+    constant_class = [
+        np.unique(labels[:, cls_idx]).size < 2
+        for cls_idx in range(labels.shape[1])
+    ]
     return {
         "count": int(len(labels)),
-        "roc_auc_macro": float(roc_auc_score(labels, probabilities, average="macro")),
-        "roc_auc_micro": float(roc_auc_score(labels, probabilities, average="micro")),
+        "roc_auc_macro": (
+            None
+            if any(constant_class)
+            else float(roc_auc_score(labels, probabilities, average="macro"))
+        ),
+        "roc_auc_micro": (
+            None
+            if np.unique(labels).size < 2
+            else float(roc_auc_score(labels, probabilities, average="micro"))
+        ),
         "f1_macro": float(f1_score(labels, predictions, average="macro", zero_division=0)),
         "f1_micro": float(f1_score(labels, predictions, average="micro", zero_division=0)),
     }
@@ -121,17 +139,28 @@ def run(args):
         heads=args.heads,
         dropout=args.dropout,
     ).to(device)
+    sampler_optimizer = torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
+    predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
     trainer = AlternatingTrainer(
         sampler,
         predictor,
-        torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr),
-        torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr),
+        sampler_optimizer,
+        predictor_optimizer,
         reinforce_baseline_coef=args.reinforce_baseline_coef,
         reinforce_gamma=args.reinforce_gamma,
     )
 
+    # Build the split-level adjacency once instead of once per batch; each
+    # target excludes its own edge lazily inside ``SubgraphSampler.sample``.
+    train_adjacency = sampler._build_adjacency(
+        train_graph["edge_index"], train_graph["node_feat"].shape[0]
+    )
+
     results = []
     experiment_start = time.perf_counter()
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else None
+    best_epoch = None
+    best_val_macro_auc = None
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
         order = torch.randperm(train_targets.shape[0], device=device)
@@ -146,6 +175,7 @@ def run(args):
                 train_targets[batch_indices],
                 train_labels[batch_indices],
                 train_graph["node_index"],
+                adjacency=train_adjacency,
             )
             seen += batch_size
             for key in totals:
@@ -178,15 +208,67 @@ def run(args):
             "seconds": time.perf_counter() - epoch_start,
         }
         results.append(record)
-        print(json.dumps(record, ensure_ascii=False), flush=True)
+        print(json.dumps(record, ensure_ascii=False, allow_nan=False), flush=True)
+
+        # Select the best checkpoint on validation Macro-AUC only.  A None
+        # value (undefined for a constant-class / empty subset) never wins.
+        val_macro_auc = val_metrics["roc_auc_macro"]
+        if (
+            val_macro_auc is not None
+            and (best_val_macro_auc is None or val_macro_auc > best_val_macro_auc)
+        ):
+            best_epoch = epoch
+            best_val_macro_auc = val_macro_auc
+            if checkpoint_dir is not None:
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "sampler": sampler.state_dict(),
+                        "predictor": predictor.state_dict(),
+                        "sampler_optimizer": sampler_optimizer.state_dict(),
+                        "predictor_optimizer": predictor_optimizer.state_dict(),
+                    },
+                    checkpoint_dir / f"best_{epoch}.pt",
+                )
+
+    # Strict protocol: replay the test set on the best-checkpoint model so the
+    # best-epoch test numbers are reproducible from a saved file.  Evaluation
+    # is deterministic (greedy sampler, eval-mode predictor), so this should
+    # match ``epochs[best_epoch]["test_*"]``.
+    best_checkpoint_test = None
+    if best_epoch is not None and checkpoint_dir is not None:
+        checkpoint = torch.load(
+            checkpoint_dir / f"best_{best_epoch}.pt", weights_only=True
+        )
+        sampler.load_state_dict(checkpoint["sampler"])
+        predictor.load_state_dict(checkpoint["predictor"])
+        best_checkpoint_test = {
+            "epoch": best_epoch,
+            **{
+                f"test_{key}": value
+                for key, value in evaluate(
+                    trainer,
+                    test_graph["node_feat"],
+                    test_graph,
+                    test_targets,
+                    test_labels,
+                    args.eval_batch_size,
+                    train_graph["node_index"],
+                ).items()
+            },
+        }
 
     output = {
         "config": vars(args),
         "total_seconds": time.perf_counter() - experiment_start,
+        "best_epoch": best_epoch,
+        "best_val_macro_auc": best_val_macro_auc,
+        "best_checkpoint_test": best_checkpoint_test,
         "epochs": results,
     }
     if args.output:
-        Path(args.output).write_text(json.dumps(output, indent=2) + "\n")
+        Path(args.output).write_text(json.dumps(output, indent=2, allow_nan=False) + "\n")
     return output
 
 
@@ -198,6 +280,11 @@ def parse_args():
     parser.add_argument(
         "--output", default=None,
         help="optional JSON path for saving experiment metrics",
+    )
+    parser.add_argument(
+        "--checkpoint-dir", default=None,
+        help="optional directory for saving the best checkpoint (selected by "
+             "validation Macro-AUC) and replaying the test set on it",
     )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--epochs", type=int, default=10)

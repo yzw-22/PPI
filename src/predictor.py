@@ -94,5 +94,10 @@ class PPIPredictor(nn.Module):
         return logits[0] if single_graph else logits
 
     def predict_proba(self, node_features, edge_index, target_nodes):
-        """Return sigmoid probabilities for inference."""
+        """Return sigmoid probabilities for inference.
+
+        This compatibility wrapper intentionally mirrors the historical public
+        API.  Batched calls should use :meth:`forward` followed by sigmoid when
+        a ``batch`` vector is required.
+        """
         return torch.sigmoid(self(node_features, edge_index, target_nodes))

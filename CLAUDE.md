@@ -17,6 +17,7 @@
 
 - 支持 SHS27k、SHS148k 和 STRING；训练入口使用 SHS27k，划分由 `--split` 指定（默认 `bfs`）。
 - `PPIGraph.build_graph(split_name="train", undirected=True)` 始终返回当前 split 的局部节点图。
+- `build_graph()` 保留 `edge_label` 公共返回字段；每条边的标签为对应 PPI 的 7 维 multi-hot 向量，`undirected=True` 时随反向边复制。
 - `edge_index` 使用局部节点索引；`node_index` 保存 local → global 蛋白索引；`node_feat` 与局部节点逐行对应。
 - 不存在 `remap_nodes` 可选项，split-local 是固定语义。
 - Sampler、代理候选、frontier 扩展和 Predictor 输入都只能使用当前 split 的节点与边。
@@ -71,6 +72,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 ```bash
 python -m src.train_shs27k \
   --split random \
+  --device cuda \
   --epochs 10 \
   --hidden-dim 512 \
   --max-steps 10 \
@@ -87,7 +89,9 @@ python -m src.train_shs27k \
 - ES（either seen）：恰好一端在训练节点集合中；
 - NS（neither seen）：两端都不在训练节点集合中。
 
-空分组报告 `count=0` 和空指标。SHS27k/bfs 测试集当前 BS 为 0，这是该 split 的结构性结果。
+空分组报告 `count=0` 和 `None` 指标；当某类别在子集中只有单一取值时，Macro-AUC 不可定义，同样报告 `None` 而不是 NaN（此时验证集最佳 checkpoint 选择会跳过该 epoch）。SHS27k/bfs 测试集当前 BS 为 0，这是该 split 的结构性结果。
+
+训练入口通过 `--checkpoint-dir DIR`（可选）启用验证集最佳 checkpoint：每个 epoch 结束时若验证 Macro-AUC 刷新最优，保存 `best_{epoch}.pt`（Sampler/Predictor 及各自优化器状态）；训练结束后加载该 checkpoint 回放一次测试集，结果写入输出 JSON 的 `best_checkpoint_test`，便于第三方按"最佳验证 epoch"复核。不传该参数则不保存、不回放，但输出仍包含 `best_epoch`/`best_val_macro_auc`。
 
 ## 历史基准结果
 
@@ -167,8 +171,8 @@ REINFORCE 训练仍有明显随机波动，后续应报告多 seed 均值和标�
 
 ## 已知问题与后续方向
 
-- 训练脚本每个 epoch 都评估测试集，严格实验应只用验证集选择 checkpoint，最后测试一次；当前也没有 checkpoint 保存功能。
-- Sampler 的 Python set 邻接、重复 tensor 构造、代理相似度扫描和候选投影仍是 STRING 上的性能瓶颈。
+- 训练脚本每个 epoch 都评估测试集；严格实验应只用验证集选择 checkpoint，最后测试一次。已通过 `--checkpoint-dir` 支持按验证集 Macro-AUC 保存最佳 checkpoint 并在训练结束后回放一次测试集；测试集的逐 epoch 输出仍保留。
+- STRING 上的主要性能瓶颈是逐 target 的 Python set k-hop BFS（k=3 时区域常饱和近整个分量）。邻接表已提升为 split 级构建一次的不可变共享结构（`tuple[frozenset]`），目标边改为每 target 惰性排除，不再深拷贝 O(E) 邻接；global→local 用二分查找替代每 target O(N) dict；frontier 增量维护。重复 tensor 构造、代理相似度扫描和候选投影仍是次要开销。
 - 当前 pairwise MLP sampler 仅完成 BFS seed=42 和 seed=123 两次实验；候选节点逐一拼接并经过 MLP，单次实验约 25 分钟，仍需关注运行时和更多 seed 的稳定性。
 - Sampler 仍可能偏向某一目标侧；k-hop 限制只限制区域，不提供双目标平衡保证。
 - 没有 STOP 动作，达到 frontier 为空或动作上限才结束；长轨迹会增加计算量和 step loss 权重。

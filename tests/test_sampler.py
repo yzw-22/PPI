@@ -14,6 +14,22 @@ def global_edges(graph):
     return edges
 
 
+def _graph_signature(graph):
+    return (
+        graph.node_index.tolist(),
+        tuple(sorted(tuple(sorted(edge)) for edge in graph.edge_index.t().tolist())),
+        graph.target_nodes.tolist(),
+    )
+
+
+def _trajectory_signature(trajectory):
+    return (
+        _graph_signature(trajectory.baseline_graph),
+        _graph_signature(trajectory.initial_graph),
+        [_graph_signature(step.graph) for step in trajectory.steps],
+    )
+
+
 class SubgraphSamplerTest(unittest.TestCase):
     def test_action_score_uses_pairwise_mlp(self):
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
@@ -41,6 +57,18 @@ class SubgraphSamplerTest(unittest.TestCase):
         self.assertEqual(
             SubgraphSampler._frontier([0, 1, 2], adjacency, region), [5]
         )
+
+    def test_node_index_must_be_strictly_increasing(self):
+        sampler = SubgraphSampler(esm_dim=2, hidden_dim=2, max_steps=0)
+
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            sampler.sample(
+                torch.zeros((3, 2)),
+                torch.empty((2, 0), dtype=torch.long),
+                torch.tensor([10, 20]),
+                node_index=torch.tensor([20, 10, 30]),
+                training=False,
+            )
 
     def test_k_hop_region_starts_from_initial_proxy(self):
         adjacency = [{2}, {2}, {0, 1, 3}, {2, 4}, {3}]
@@ -91,6 +119,35 @@ class SubgraphSamplerTest(unittest.TestCase):
         self.assertNotIn(0, trajectory.initial_graph.node_index[2:].tolist())
         self.assertNotIn(1, trajectory.initial_graph.node_index[2:].tolist())
         self.assertNotIn((0, 1), global_edges(trajectory.initial_graph))
+
+    def test_shared_adjacency_is_equivalent_to_standalone_build(self):
+        # A shared immutable adjacency (with the target edge still present),
+        # patched lazily per target, must produce the same trajectory as the
+        # standalone path that builds a safe adjacency with the edge removed.
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ])
+        edge_index = torch.tensor([
+            [0, 1, 2, 3, 4],
+            [1, 2, 3, 4, 0],
+        ])
+        target = torch.tensor([0, 1])
+        shared = SubgraphSampler._build_adjacency(edge_index, 5)
+        sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=2)
+
+        standalone = sampler.sample(node_features, edge_index, target, training=False)
+        shared_trajectory = sampler.sample(
+            node_features, edge_index, target, training=False, adjacency=shared
+        )
+
+        self.assertEqual(
+            _trajectory_signature(shared_trajectory),
+            _trajectory_signature(standalone),
+        )
 
 
 if __name__ == "__main__":
