@@ -17,7 +17,10 @@
   `ppi_labels` 读取每对 PPI 的 multi-hot 标签。
 - split 节点始终局部化，不再提供或支持 `remap_nodes` 参数。
 - `get_dataloader()` 是公共 DataLoader 接口；当前训练入口为了每个 epoch 使用 `torch.randperm`，手动按 batch 更新。
-- `train_shs27k` 通过 `--split {bfs,dfs,random}` 选择 SHS27k 划分，默认是 `bfs`。
+- `train_shs27k` 通过 `--dataset {SHS27k,SHS148k,STRING}` 选择数据集（默认
+  `SHS27k`），通过 `--split {bfs,dfs,random}` 选择该数据集可用的划分
+  （默认 `bfs`）；不支持的 dataset/split 组合在参数解析阶段即报错。
+  特征维度从加载的 tensor 读取，不硬编码 2560。
 
 ## SubgraphSampler
 

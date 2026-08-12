@@ -10,12 +10,12 @@
 - `src/sampler.py`：为每个目标 PPI 生成可变长度的 REINFORCE 子图轨迹。
 - `src/predictor.py`：使用 GAT 编码子图并输出 7 维 PPI logits。
 - `src/trainer.py`：交替更新 Sampler 和 Predictor。
-- `src/train_shs27k.py`：SHS27k 训练、验证和测试入口，支持 `bfs`、`dfs`、`random` 划分。
+- `src/train_shs27k.py`：训练、验证和测试入口，通过 `--dataset` 选择 SHS27k/SHS148k/STRING，通过 `--split` 选择该数据集可用的 `bfs`、`dfs`、`random` 划分。
 - `tests/`：当前实现的图构建、采样安全性、final-graph 训练和 RTG 单元测试。
 
 ## 当前数据与索引约束
 
-- 支持 SHS27k、SHS148k 和 STRING；训练入口使用 SHS27k，划分由 `--split` 指定（默认 `bfs`）。
+- 支持 SHS27k、SHS148k 和 STRING；训练入口通过 `--dataset` 选择数据集（默认 `SHS27k`），划分由 `--split` 指定（默认 `bfs`）。划分可用性与数据集相关（SHS148k 无 bfs，STRING 仅 dfs），不支持的组合在参数解析阶段即报错；不检查数据集文件是否存在。
 - `PPIGraph.build_graph(split_name="train", undirected=True)` 始终返回当前 split 的局部节点图。
 - `build_graph()` 保留 `edge_label` 公共返回字段；每条边的标签为对应 PPI 的 7 维 multi-hot 向量，`undirected=True` 时随反向边复制。
 - `edge_index` 使用局部节点索引；`node_index` 保存 local → global 蛋白索引；`node_feat` 与局部节点逐行对应。
@@ -71,6 +71,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 
 ```bash
 python -m src.train_shs27k \
+  --dataset SHS27k \
   --split random \
   --device cuda \
   --epochs 10 \

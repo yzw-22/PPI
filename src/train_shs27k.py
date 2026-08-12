@@ -1,4 +1,10 @@
-"""Run an SHS27k alternating-training experiment."""
+"""Run an alternating-training PPI experiment.
+
+Supports the SHS27k / SHS148k / STRING datasets via ``--dataset`` and their
+available bfs / dfs / random splits via ``--split`` (the valid split choices
+depend on the dataset; see ``PPIGraph.AVAILABLE_SPLITS``). Dataset files are
+assumed to exist under ``--root`` and are not pre-checked.
+"""
 
 import argparse
 import json
@@ -111,8 +117,9 @@ def run(args):
 
     device = torch.device(args.device)
     graph = PPIGraph(
-        "SHS27k", args.split, root=args.root, device=device, cache_dir=args.cache_dir
+        args.dataset, args.split, root=args.root, device=device, cache_dir=args.cache_dir
     )
+    esm_dim = graph.tensor.shape[1]
     train_graph = graph.build_graph("train", undirected=True)
     val_graph = graph.build_graph("val", undirected=True)
     test_graph = graph.build_graph("test", undirected=True)
@@ -127,13 +134,13 @@ def run(args):
     test_labels = graph.ppi_labels[test_indices]
 
     sampler = SubgraphSampler(
-        esm_dim=2560,
+        esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
         max_steps=args.max_steps,
         k_hops=args.k_hops,
     ).to(device)
     predictor = PPIPredictor(
-        esm_dim=2560,
+        esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
         num_layers=args.gnn_layers,
         heads=args.heads,
@@ -276,7 +283,17 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="dataset")
     parser.add_argument("--cache-dir", default="dataset/.cache")
-    parser.add_argument("--split", choices=["bfs", "dfs", "random"], default="bfs")
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(PPIGraph.AVAILABLE_SPLITS),
+        default="SHS27k",
+        help="dataset to train on; one of SHS27k, SHS148k, STRING",
+    )
+    parser.add_argument(
+        "--split", choices=["bfs", "dfs", "random"], default="bfs",
+        help="split method; the valid choices depend on --dataset "
+             "(SHS148k has no bfs, STRING only provides dfs)",
+    )
     parser.add_argument(
         "--output", default=None,
         help="optional JSON path for saving experiment metrics",
@@ -301,7 +318,14 @@ def parse_args():
     parser.add_argument("--reinforce-baseline-coef", type=float, default=0.1)
     parser.add_argument("--reinforce-gamma", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.split not in PPIGraph.AVAILABLE_SPLITS[args.dataset]:
+        parser.error(
+            f"split {args.split!r} is not available for dataset "
+            f"{args.dataset!r}; expected one of "
+            f"{PPIGraph.AVAILABLE_SPLITS[args.dataset]}"
+        )
+    return args
 
 
 if __name__ == "__main__":
