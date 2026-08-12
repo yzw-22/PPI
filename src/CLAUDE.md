@@ -10,10 +10,11 @@
 - `build_graph(split_name="train", undirected=True)` 按当前 split 构建图；默认补齐反向边。
 - 构图结果包含：
   - `edge_index`：局部节点索引；
+  - `edge_label`：每条边对应的 7 维 multi-hot 标签；
   - `node_index`：local → global 蛋白索引；
   - `node_feat`：当前 split 节点的 embedding。
-- `build_graph` 不再返回 `edge_label`；训练使用的每对 PPI multi-hot 标签直接由
-  `train_shs27k` 从 `ppi_labels` 读取。
+- `build_graph` 保留 `edge_label` 公共返回字段；训练入口也可直接从
+  `ppi_labels` 读取每对 PPI 的 multi-hot 标签。
 - split 节点始终局部化，不再提供或支持 `remap_nodes` 参数。
 - `get_dataloader()` 是公共 DataLoader 接口；当前训练入口为了每个 epoch 使用 `torch.randperm`，手动按 batch 更新。
 - `train_shs27k` 通过 `--split {bfs,dfs,random}` 选择 SHS27k 划分，默认是 `bfs`。
@@ -25,7 +26,7 @@
 - `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None)` 的拓扑和特征必须来自同一个 split。
 - `node_index` 将目标的 global protein index 映射到当前图的局部行号。
 - 每个目标采样前排除目标边的两个方向；目标边不会进入 baseline、initial 或 step graph。
-- 邻接表按 split 构建一次并共享（不可变 `tuple[frozenset]`），目标边在采样时惰性排除，避免每 target 深拷贝 O(E) 邻接；目标局部行号用 `torch.searchsorted` 在有序 `node_index` 上二分定位，替代每 target O(N) dict 查找。
+- 邻接表按 split 构建一次并共享（不可变 `tuple[frozenset]`），目标边在采样时惰性排除，避免每 target 深拷贝 O(E) 邻接；目标局部行号用 `torch.searchsorted` 在严格升序 `node_index` 上二分定位，替代每 target O(N) dict 查找。传入未排序或重复的 `node_index` 会明确抛出 `ValueError`。
 - `baseline_graph` 只包含两个目标节点且无边。
 - 删除目标边后，安全邻接为空的目标被视为孤立节点。
 - 孤立目标从当前 split 的非目标节点中按余弦相似度选择代理；代理不能是目标节点，两个目标可以共享代理。
@@ -70,8 +71,8 @@
   - `h_u + h_v`；
   - `|h_u - h_v|`；
   - 子图节点表示的均值。
-- 输出 7 维 logits；推理时对 logits 做 sigmoid 得到概率（训练入口直接在
-  `evaluate` 中使用 `torch.sigmoid`）。
+- 输出 7 维 logits；保留公共 `predict_proba()` 包装器执行 sigmoid，批量图推理可
+  使用 `forward()` 后自行执行 sigmoid。
 - `forward()` 支持多图 batch，通过 `batch` 向量区分子图。
 - 全图均值会使距离目标超过 GAT 层数的节点仍参与预测。
 

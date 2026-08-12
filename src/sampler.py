@@ -211,11 +211,12 @@ class SubgraphSampler(nn.Module):
         target_nodes = torch.as_tensor(
             target_nodes, device=node_features.device, dtype=torch.long
         )
-        # ``node_index`` is sorted (``PPIGraph.build_graph`` emits ``torch.unique``
-        # ids, and the default is ``arange``), so binary search resolves
-        # global -> local in O(log N) instead of building an O(N) dict per
-        # target.  The membership guard keeps this correct even if a caller
-        # passes an unsorted ``node_index``.
+        # ``node_index`` must be strictly increasing: ``PPIGraph.build_graph``
+        # emits ``torch.unique`` ids, and the default is ``arange``.  Enforce
+        # this contract before using binary search so an unsorted public input
+        # cannot be silently mapped to the wrong local nodes.
+        if node_index.numel() > 1 and torch.any(node_index[1:] <= node_index[:-1]):
+            raise ValueError("node_index must be strictly increasing")
         target_local = torch.searchsorted(node_index, target_nodes)
         if target_local.max() >= node_index.numel():
             raise ValueError("target_nodes must be present in node_index")

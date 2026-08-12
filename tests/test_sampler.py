@@ -58,6 +58,18 @@ class SubgraphSamplerTest(unittest.TestCase):
             SubgraphSampler._frontier([0, 1, 2], adjacency, region), [5]
         )
 
+    def test_node_index_must_be_strictly_increasing(self):
+        sampler = SubgraphSampler(esm_dim=2, hidden_dim=2, max_steps=0)
+
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            sampler.sample(
+                torch.zeros((3, 2)),
+                torch.empty((2, 0), dtype=torch.long),
+                torch.tensor([10, 20]),
+                node_index=torch.tensor([20, 10, 30]),
+                training=False,
+            )
+
     def test_k_hop_region_starts_from_initial_proxy(self):
         adjacency = [{2}, {2}, {0, 1, 3}, {2, 4}, {3}]
 

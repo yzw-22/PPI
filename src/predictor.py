@@ -9,7 +9,7 @@ from torch_geometric.nn import GATConv
 class PPIPredictor(nn.Module):
     """Predict the seven PPI relation labels for a sampled subgraph.
 
-    The forward method returns logits; apply a sigmoid to obtain the
+    The forward method returns logits.  Call :meth:`predict_proba` for sigmoid
     probabilities used during inference.
     """
 
@@ -92,3 +92,12 @@ class PPIPredictor(nn.Module):
         pair = torch.cat((u + v, torch.abs(u - v), graph), dim=1)
         logits = self.output(pair)
         return logits[0] if single_graph else logits
+
+    def predict_proba(self, node_features, edge_index, target_nodes):
+        """Return sigmoid probabilities for inference.
+
+        This compatibility wrapper intentionally mirrors the historical public
+        API.  Batched calls should use :meth:`forward` followed by sigmoid when
+        a ``batch`` vector is required.
+        """
+        return torch.sigmoid(self(node_features, edge_index, target_nodes))

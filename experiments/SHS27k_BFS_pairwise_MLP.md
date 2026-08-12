@@ -67,6 +67,7 @@ e_i = W_2\,\operatorname{LeakyReLU}
 ```bash
 python -m src.train_shs27k \
   --split bfs \
+  --device cuda \
   --epochs 10 \
   --hidden-dim 512 \
   --max-steps 10 \

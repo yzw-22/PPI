@@ -17,6 +17,7 @@
 
 - 支持 SHS27k、SHS148k 和 STRING；训练入口使用 SHS27k，划分由 `--split` 指定（默认 `bfs`）。
 - `PPIGraph.build_graph(split_name="train", undirected=True)` 始终返回当前 split 的局部节点图。
+- `build_graph()` 保留 `edge_label` 公共返回字段；每条边的标签为对应 PPI 的 7 维 multi-hot 向量，`undirected=True` 时随反向边复制。
 - `edge_index` 使用局部节点索引；`node_index` 保存 local → global 蛋白索引；`node_feat` 与局部节点逐行对应。
 - 不存在 `remap_nodes` 可选项，split-local 是固定语义。
 - Sampler、代理候选、frontier 扩展和 Predictor 输入都只能使用当前 split 的节点与边。
@@ -71,6 +72,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 ```bash
 python -m src.train_shs27k \
   --split random \
+  --device cuda \
   --epochs 10 \
   --hidden-dim 512 \
   --max-steps 10 \

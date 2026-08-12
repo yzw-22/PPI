@@ -23,6 +23,10 @@ class PPIGraphTest(unittest.TestCase):
         self.assertEqual(split_graph["node_index"].tolist(), [1, 2])
         self.assertEqual(split_graph["node_feat"].flatten().tolist(), [1.0, 2.0])
         self.assertEqual(split_graph["edge_index"].tolist(), [[0, 1], [1, 0]])
+        self.assertEqual(split_graph["edge_label"].shape, (2, 7))
+        self.assertTrue(torch.equal(
+            split_graph["edge_label"][0], split_graph["edge_label"][1]
+        ))
 
 
 if __name__ == "__main__":
