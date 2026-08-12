@@ -1,0 +1,102 @@
+# 训练时间瓶颈与优化方案
+
+## 现状
+
+最近的 SHS27k BFS 实验平均约需 130 秒/epoch。训练时间主要来自 Sampler 轨迹生成、Sampler 更新阶段对多个 step graph 的 Predictor 前向计算，以及每个 epoch 重复执行验证集和测试集评估；`reinforce_gamma` 本身不会显著影响运行时间。
+
+## 主要瓶颈
+
+### 1. Sampler 更新和 Predictor 更新重复计算
+
+每个训练 batch 先生成 stochastic trajectory，并对 `G_0` 和所有 step graph 计算 Predictor loss；随后又重新生成 greedy trajectory，并对 final graph 执行 Predictor 更新。`max_steps=10` 时，一个 batch 最多会产生约 320 个 step graph，GAT 前向计算成本较高。
+
+### 2. 每个 epoch 都评估验证集和测试集
+
+当前训练循环每轮都会完整遍历 val/test PPI，并重新执行 greedy Sampler 和 Predictor 推理。测试集不需要参与逐轮模型选择，逐轮测试会显著增加总耗时，也不符合严格的验证集选模型流程。
+
+### 3. Sampler 的 Python 和动态 tensor 操作
+
+每个 target、每一步会执行 Python `set`/`list` 更新、`sorted(frontier)`、动态构造 `selected_tensor` 和 `candidate_tensor`，并在 `_make_graph()` 中构造 Python 字典和边列表。`int(action)` 还可能触发 GPU 到 CPU 的同步。
+
+### 4. 重复的候选投影、状态均值和代理扫描
+
+- 同一 trajectory 中候选节点可能重复经过 `neighbor_proj`；
+- 每一步都重新索引 selected nodes 并计算 embedding 均值；
+- `_nearest_proxy()` 每次都重新归一化整个节点 embedding 矩阵并扫描余弦相似度；
+- 同一个 PPI 的 `G_0` 在 Sampler 更新、Predictor 更新、验证和测试中重复构造。
+
+### 5. 每个 target 的邻接表复制
+
+共享邻接表在每个 target 中通过 `list(adjacency)` 创建浅层列表，并修改两个目标节点的邻接集合。SHS27k 影响有限，但在 STRING 上会产生明显的 O(N) 额外开销。
+
+## 优先级方案
+
+| 优先级 | 方案 | 预期收益 | 风险 |
+|---|---|---:|---:|
+| P0 | 训练期间取消逐 epoch 测试，训练结束只测试最佳 checkpoint | 很高 | 很低 |
+| P0 | 缓存每个 split 的 `G_0` | 中等 | 很低 |
+| P1 | 缓存 split-level 归一化 embedding 和 candidate projection | 高 | 低 |
+| P1 | 增量维护 selected embedding sum/count | 中等 | 低 |
+| P1 | 消除每个 target 的完整 adjacency list 复制 | STRING 上中等到高 | 中 |
+| P1 | 减少或合并 Predictor 的重复 forward | 很高 | 中 |
+| P2 | 评估阶段使用 `torch.inference_mode()` | 中等 | 很低 |
+| P2 | 增大 train/eval batch size | 中等 | 中 |
+| P2 | Predictor 尝试 BF16/AMP | 中等到高 | 中 |
+| P3 | CSR tensor 邻接和 tensor frontier | STRING 上高 | 较高 |
+
+## 推荐实施顺序
+
+### 第一阶段：低风险
+
+1. 训练过程中只评估验证集；根据验证 Macro-AUC 保存最佳 checkpoint，训练结束后只测试一次。
+2. 验证和测试使用 `torch.inference_mode()`。
+3. 按 split 和 target 缓存 `G_0` 的节点、边和 proxy 结果。
+4. 缓存 split-level 归一化 embedding。
+5. 在一次 Sampler trajectory 内预先计算 `neighbor_proj(node_features)`，每步只索引候选节点。
+6. 用 `state_sum / state_count` 增量维护状态均值。
+
+### 第二阶段：Sampler 图操作
+
+1. 用共享 adjacency 加目标边排除上下文替代 `list(adjacency)`。
+2. 减少动态 tensor 构造和 Python 字典/边列表构造。
+3. 避免 `int(action)` 导致的 GPU 同步。
+4. 缓存或批量构造 graph index。
+
+### 第三阶段：GPU 优化
+
+1. 在显存允许范围内测试 train batch size `32/64/128` 和 eval batch size `64/128/256`。
+2. 优先对 Predictor GAT 使用 BF16 autocast。
+3. 保持 categorical/log-prob、return-to-go、advantage 和 value loss 使用 FP32；再单独评估 Sampler projection/MLP 是否适合 BF16。
+4. 比较速度、显存、NaN 情况、reward 和验证性能。
+
+### 第四阶段：STRING 扩展
+
+1. 将 Python set adjacency 改为 CSR 格式 `row_ptr/col_index`。
+2. 使用 tensor 化 visited mask 和 frontier。
+3. 对候选节点进行批量投影和批量动作评分。
+4. 结合 split-local remap 和缓存降低全局节点扫描。
+
+## Profiling 要求
+
+优化前后应分别统计：
+
+- `sampler_g0_build`
+- `sampler_action_score`
+- `sampler_graph_build`
+- `predictor_baseline`
+- `predictor_step_graphs`
+- `predictor_update`
+- `validation`
+- `test_evaluation`
+
+CUDA 是异步执行的，测量 GPU 时间前应调用 `torch.cuda.synchronize()`；建议使用 `torch.profiler` 同时记录 CPU/CUDA 活动、算子形状和显存。
+
+## 必须保持的不变量
+
+- 所有节点、代理和边都来自当前 train/val/test split；
+- 目标边始终从安全邻接、`G_0` 和 step graph 中移除；
+- `G_0` 继续使用固定 seed=42 的一跳节点采样；
+- `G_0` 保留选中节点之间的全部安全诱导边；
+- Predictor 训练和评估继续使用 `final_graph`；
+- REINFORCE return-to-go 公式不变；
+- F1 阈值固定为 0.5。
