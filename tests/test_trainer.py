@@ -76,7 +76,6 @@ class PredictorGraphSelectionTest(unittest.TestCase):
     def test_predictor_update_uses_only_final_graph(self):
         trajectory = SamplingTrajectory(
             baseline_graph=_graph([0, 1]),
-            initial_graph=_graph([0, 1]),
             steps=[
                 SamplingStep(_graph([0, 1]), torch.tensor(0.0), torch.tensor(0.0)),
                 SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)),
@@ -94,10 +93,9 @@ class PredictorGraphSelectionTest(unittest.TestCase):
         self.assertEqual(len(trainer.seen_graphs), 1)
         self.assertEqual(trainer.seen_graphs[0].feature_index.tolist(), [0, 1, 2])
 
-    def test_predictor_update_uses_initial_graph_when_no_step_exists(self):
+    def test_predictor_update_uses_baseline_graph_when_no_step_exists(self):
         trajectory = SamplingTrajectory(
-            baseline_graph=_graph([0, 1]),
-            initial_graph=_graph([0, 1, 2]),
+            baseline_graph=_graph([0, 1, 2]),
             steps=[],
         )
         trainer = _trainer_for(trajectory)

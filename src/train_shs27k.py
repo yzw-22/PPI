@@ -138,7 +138,7 @@ def run(args):
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
         max_steps=args.max_steps,
-        k_hops=args.k_hops,
+        fixed_num=args.fixed_num,
     ).to(device)
     predictor = PPIPredictor(
         esm_dim=esm_dim,
@@ -306,8 +306,8 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--eval-batch-size", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
-    parser.add_argument("--max-steps", type=int, default=3)
-    parser.add_argument("--k-hops", type=int, default=2)
+    parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument("--fixed-num", type=int, default=1)
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)

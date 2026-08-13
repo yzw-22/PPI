@@ -146,9 +146,8 @@ class AlternatingTrainer:
                 for target in target_nodes
             ]
         labels = labels.to(device=node_features.device, dtype=torch.float32)
-        # Match evaluation: train on the final graph only.  For a trajectory
-        # with no actions, final_graph is initial_graph (including any virtual
-        # proxy), rather than baseline_graph.
+        # Match evaluation: train on the final graph only. For a trajectory
+        # with no actions, final_graph is the G0 baseline graph.
         graphs = [trajectory.final_graph for trajectory in trajectories]
 
         logits = self._predict_graphs(node_features, graphs)

@@ -2,7 +2,7 @@
 
 ## 现状
 
-最近的 SHS27k BFS 实验平均约需 130 秒/epoch。训练时间主要来自 Sampler 轨迹生成、Sampler 更新阶段对多个 step graph 的 Predictor 前向计算，以及每个 epoch 重复执行验证集和测试集评估；`reinforce_gamma` 本身不会显著影响运行时间。
+训练时间主要来自 Sampler 轨迹生成、Sampler 更新阶段对多个 step graph 的 Predictor 前向计算，以及验证集推理；`reinforce_gamma` 本身不会显著影响运行时间。
 
 ## 主要瓶颈
 
@@ -10,9 +10,9 @@
 
 每个训练 batch 先生成 stochastic trajectory，并对 `G_0` 和所有 step graph 计算 Predictor loss；随后又重新生成 greedy trajectory，并对 final graph 执行 Predictor 更新。`max_steps=10` 时，一个 batch 最多会产生约 320 个 step graph，GAT 前向计算成本较高。
 
-### 2. 每个 epoch 都评估验证集和测试集
+### 2. 验证集推理和最终测试
 
-当前训练循环每轮都会完整遍历 val/test PPI，并重新执行 greedy Sampler 和 Predictor 推理。测试集不需要参与逐轮模型选择，逐轮测试会显著增加总耗时，也不符合严格的验证集选模型流程。
+训练循环每轮完整遍历验证 PPI，并重新执行 greedy Sampler 和 Predictor 推理；训练结束后再对最佳验证状态执行一次测试。测试集不参与逐轮模型选择，因此不会产生额外的逐轮测试开销。
 
 ### 3. Sampler 的 Python 和动态 tensor 操作
 
@@ -33,7 +33,7 @@
 
 | 优先级 | 方案 | 预期收益 | 风险 |
 |---|---|---:|---:|
-| P0 | 训练期间取消逐 epoch 测试，训练结束只测试最佳 checkpoint | 很高 | 很低 |
+| 已完成 | 训练期间取消逐 epoch 测试，训练结束只测试最佳 checkpoint | 很高 | 很低 |
 | P0 | 缓存每个 split 的 `G_0` | 中等 | 很低 |
 | P1 | 缓存 split-level 归一化 embedding 和 candidate projection | 高 | 低 |
 | P1 | 增量维护 selected embedding sum/count | 中等 | 低 |
@@ -48,7 +48,7 @@
 
 ### 第一阶段：低风险
 
-1. 训练过程中只评估验证集；根据验证 Macro-AUC 保存最佳 checkpoint，训练结束后只测试一次。
+1. 已完成：训练过程中只评估验证集；根据验证 Macro-AUC 保存最佳状态，训练结束后只测试一次。
 2. 验证和测试使用 `torch.inference_mode()`。
 3. 按 split 和 target 缓存 `G_0` 的节点、边和 proxy 结果。
 4. 缓存 split-level 归一化 embedding。
@@ -95,7 +95,7 @@ CUDA 是异步执行的，测量 GPU 时间前应调用 `torch.cuda.synchronize(
 
 - 所有节点、代理和边都来自当前 train/val/test split；
 - 目标边始终从安全邻接、`G_0` 和 step graph 中移除；
-- `G_0` 继续使用固定 seed=42 的一跳节点采样；
+- `G_0` 继续使用固定 seed=42，分别对 `u/v/proxy` 的安全一跳邻居采样；
 - `G_0` 保留选中节点之间的全部安全诱导边；
 - Predictor 训练和评估继续使用 `final_graph`；
 - REINFORCE return-to-go 公式不变；

@@ -35,16 +35,15 @@ class SamplingTrajectory:
     """Result of sampling a target pair."""
 
     baseline_graph: SampledGraph
-    initial_graph: SampledGraph
     steps: list[SamplingStep]
 
     @property
     def final_graph(self):
-        return self.steps[-1].graph if self.steps else self.initial_graph
+        return self.steps[-1].graph if self.steps else self.baseline_graph
 
 
 class SubgraphSampler(nn.Module):
-    """Select a bounded neighborhood around one target PPI pair.
+    """Select a bounded subgraph around one target PPI pair.
 
     ``node_features`` and ``edge_index`` describe the current data split.  The
     edge connecting the target pair is excluded in both directions while
@@ -52,20 +51,24 @@ class SubgraphSampler(nn.Module):
     supplied, or by removing it from ``edge_index`` when building standalone.
     ``node_index`` maps rows in ``node_features`` to global protein indices;
     when omitted, rows are treated as global indices.
+
+    ``fixed_num`` limits the number of deterministic, seed-42 sampled
+    one-hop context nodes selected independently for each initial seed in
+    ``{u, v, proxy}``.
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 k_hops=3):
+                 fixed_num=1):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
-        if k_hops < 0:
-            raise ValueError("k_hops must be non-negative")
+        if fixed_num < 0:
+            raise ValueError("fixed_num must be non-negative")
 
         self.esm_dim = esm_dim
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
-        self.k_hops = k_hops
+        self.fixed_num = fixed_num
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.  The first MLP layer receives the
         # concatenated pair, so it can mix state and candidate features.
@@ -130,18 +133,19 @@ class SubgraphSampler(nn.Module):
         self._add_virtual_proxies(
             selected, graph_edges, adjacency, node_features, target_local
         )
+        selected.extend(self._sample_initial_neighbors(selected, adjacency))
+        # G0 is the sole baseline: include every safe split-local edge induced
+        # by its nodes, in addition to any virtual proxy edges.
         self._add_real_edges(selected, graph_edges, adjacency)
-        allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
-
-        baseline_graph = self._make_graph([u, v], set(), target_local, node_index)
-        initial_graph = self._make_graph(selected, graph_edges, target_local, node_index)
+        baseline_graph = self._make_graph(
+            selected, graph_edges, target_local, node_index
+        )
         steps = []
 
         # The frontier is maintained incrementally instead of being rebuilt
         # from every selected node each step: seed it with the initially
         # selected nodes' neighbors (including any proxy), then each step only
-        # add the newly chosen node's neighbors.  The k-hop region filter is
-        # applied at candidate time.
+        # add the newly chosen node's neighbors.
         selected_set = set(selected)
         frontier = set()
         for node in selected:
@@ -149,7 +153,7 @@ class SubgraphSampler(nn.Module):
         frontier.difference_update(selected_set)
 
         for _ in range(self.max_steps):
-            candidates = sorted(frontier & allowed_nodes)
+            candidates = sorted(frontier)
             if not candidates:
                 break
 
@@ -187,7 +191,7 @@ class SubgraphSampler(nn.Module):
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
             steps.append(SamplingStep(graph, log_prob, value))
 
-        return SamplingTrajectory(baseline_graph, initial_graph, steps)
+        return SamplingTrajectory(baseline_graph, steps)
 
     def forward(self, node_features, edge_index, target_nodes, node_index=None,
                 training=None, adjacency=None):
@@ -248,32 +252,27 @@ class SubgraphSampler(nn.Module):
                 adjacency[target].add(source)
         return tuple(frozenset(neighbors) for neighbors in adjacency)
 
-    @staticmethod
-    def _frontier(selected, adjacency, allowed_nodes=None):
-        selected_set = set(selected)
-        candidates = {neighbor for node in selected for neighbor in adjacency[node]
-                      if neighbor not in selected_set}
-        if allowed_nodes is not None:
-            candidates.intersection_update(allowed_nodes)
-        return sorted(candidates)
+    def _sample_initial_neighbors(self, seed_nodes, adjacency):
+        """Sample at most ``fixed_num`` neighbors independently per seed.
 
-    @staticmethod
-    def _k_hop_region(seeds, adjacency, k_hops):
-        """Return nodes within ``k_hops`` safe-graph hops of ``seeds``."""
-        region = set(seeds)
-        frontier = set(seeds)
-        for _ in range(k_hops):
-            next_frontier = {
-                neighbor
-                for node in frontier
-                for neighbor in adjacency[node]
-                if neighbor not in region
-            }
-            region.update(next_frontier)
-            frontier = next_frontier
-            if not frontier:
-                break
-        return region
+        A private generator seeded with 42 makes G0 reproducible without
+        resetting the global RNG used for RL action sampling.
+        """
+        generator = torch.Generator(device="cpu").manual_seed(42)
+        initial_set = set(seed_nodes)
+        sampled = set()
+        for seed in seed_nodes:
+            candidates = sorted(
+                neighbor for neighbor in adjacency[seed]
+                if neighbor not in initial_set
+            )
+            if len(candidates) > self.fixed_num:
+                positions = torch.randperm(
+                    len(candidates), generator=generator
+                )[:self.fixed_num].tolist()
+                candidates = [candidates[position] for position in positions]
+            sampled.update(candidates)
+        return sorted(sampled)
 
     @staticmethod
     def _add_action_edges(action, selected, graph_edges, adjacency):
