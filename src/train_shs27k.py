@@ -7,6 +7,7 @@ assumed to exist under ``--root`` and are not pre-checked.
 """
 
 import argparse
+import copy
 import json
 import random
 import time
@@ -168,6 +169,7 @@ def run(args):
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else None
     best_epoch = None
     best_val_macro_auc = None
+    best_state = None
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
         order = torch.randperm(train_targets.shape[0], device=device)
@@ -198,20 +200,10 @@ def run(args):
             args.eval_batch_size,
             train_graph["node_index"],
         )
-        test_metrics = evaluate(
-            trainer,
-            test_graph["node_feat"],
-            test_graph,
-            test_targets,
-            test_labels,
-            args.eval_batch_size,
-            train_graph["node_index"],
-        )
         record = {
             "epoch": epoch,
             **train_metrics,
             **{f"val_{key}": value for key, value in val_metrics.items()},
-            **{f"test_{key}": value for key, value in test_metrics.items()},
             "seconds": time.perf_counter() - epoch_start,
         }
         results.append(record)
@@ -226,6 +218,11 @@ def run(args):
         ):
             best_epoch = epoch
             best_val_macro_auc = val_macro_auc
+            best_state = {
+                "epoch": epoch,
+                "sampler": copy.deepcopy(sampler.state_dict()),
+                "predictor": copy.deepcopy(predictor.state_dict()),
+            }
             if checkpoint_dir is not None:
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 torch.save(
@@ -239,15 +236,16 @@ def run(args):
                     checkpoint_dir / f"best_{epoch}.pt",
                 )
 
-    # Strict protocol: replay the test set on the best-checkpoint model so the
-    # best-epoch test numbers are reproducible from a saved file.  Evaluation
-    # is deterministic (greedy sampler, eval-mode predictor), so this should
-    # match ``epochs[best_epoch]["test_*"]``.
+    # Strict protocol: evaluate the test set exactly once, after training, on
+    # the best validation checkpoint. When no checkpoint directory is given,
+    # use the in-memory copy captured at the best epoch.
     best_checkpoint_test = None
-    if best_epoch is not None and checkpoint_dir is not None:
-        checkpoint = torch.load(
-            checkpoint_dir / f"best_{best_epoch}.pt", weights_only=True
-        )
+    if best_epoch is not None:
+        checkpoint = best_state
+        if checkpoint_dir is not None:
+            checkpoint = torch.load(
+                checkpoint_dir / f"best_{best_epoch}.pt", weights_only=True
+            )
         sampler.load_state_dict(checkpoint["sampler"])
         predictor.load_state_dict(checkpoint["predictor"])
         best_checkpoint_test = {
