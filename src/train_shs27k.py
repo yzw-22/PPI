@@ -108,6 +108,44 @@ def evaluate(trainer, node_features, split_graph, targets, labels, batch_size,
     return metrics
 
 
+def _aggregate_train_metrics(batch_records):
+    """Aggregate one epoch using each trainer metric's native denominator.
+
+    Sampler metrics returned by ``AlternatingTrainer`` are means over trajectory
+    steps, so every action receives equal weight here.  Predictor loss is a
+    mean over PPI samples and remains sample-weighted.
+    """
+    sampler_loss_total = 0.0
+    reward_total = 0.0
+    sampler_step_count = 0
+    predictor_loss_total = 0.0
+    sample_count = 0
+    for batch_size, metrics in batch_records:
+        steps = int(metrics["sampler_step_count"])
+        sampler_loss_total += float(metrics["sampler_loss"]) * steps
+        reward_total += float(metrics["mean_reward"]) * steps
+        sampler_step_count += steps
+
+        sampler_size = int(batch_size)
+        predictor_loss_total += float(metrics["predictor_loss"]) * sampler_size
+        sample_count += sampler_size
+
+    return {
+        "sampler_loss": (
+            sampler_loss_total / sampler_step_count
+            if sampler_step_count else 0.0
+        ),
+        "predictor_loss": (
+            predictor_loss_total / sample_count
+            if sample_count else 0.0
+        ),
+        "mean_reward": (
+            reward_total / sampler_step_count
+            if sampler_step_count else 0.0
+        ),
+    }
+
+
 def run(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -173,8 +211,7 @@ def run(args):
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
         order = torch.randperm(train_targets.shape[0], device=device)
-        totals = {"sampler_loss": 0.0, "predictor_loss": 0.0, "mean_reward": 0.0}
-        seen = 0
+        batch_records = []
         for start in range(0, len(order), args.batch_size):
             batch_indices = order[start:start + args.batch_size]
             batch_size = batch_indices.numel()
@@ -186,11 +223,9 @@ def run(args):
                 train_graph["node_index"],
                 adjacency=train_adjacency,
             )
-            seen += batch_size
-            for key in totals:
-                totals[key] += float(metrics[key]) * batch_size
+            batch_records.append((batch_size, metrics))
 
-        train_metrics = {key: value / seen for key, value in totals.items()}
+        train_metrics = _aggregate_train_metrics(batch_records)
         val_metrics = evaluate(
             trainer,
             val_graph["node_feat"],

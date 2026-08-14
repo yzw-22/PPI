@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from src.sampler import SampledGraph, SamplingStep, SamplingTrajectory
+from src.train_shs27k import _aggregate_train_metrics
 from src.trainer import AlternatingTrainer
 
 
@@ -110,6 +111,78 @@ class PredictorGraphSelectionTest(unittest.TestCase):
         self.assertEqual(len(trainer.seen_graphs), 1)
         self.assertEqual(trainer.seen_graphs[0].feature_index.tolist(), [0, 1, 2])
 
+
+class SamplerMetricAggregationTest(unittest.TestCase):
+    def test_sampler_batch_reports_number_of_trajectory_steps(self):
+        trajectory = SamplingTrajectory(
+            baseline_graph=_graph([0, 1]),
+            steps=[
+                SamplingStep(_graph([0, 1]), torch.tensor(0.0), torch.tensor(0.0)),
+                SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)),
+            ],
+        )
+        sampler = _RecordingSampler(trajectory)
+        # Give the policy/value tensors a differentiable path so the sampler
+        # update can run while this test inspects only the auxiliary count.
+        for step in sampler.trajectory.steps:
+            step.log_prob = sampler.parameter * 0
+            step.value = sampler.parameter * 0
+        predictor = _RecordingPredictor()
+        trainer = _RecordingTrainer(
+            sampler,
+            predictor,
+            torch.optim.SGD(sampler.parameters(), lr=0.1),
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+        )
+
+        metrics = trainer.sampler_batch_step(
+            torch.zeros((3, 1)),
+            torch.empty((2, 0), dtype=torch.long),
+            torch.tensor([[0, 1]]),
+            torch.zeros((1, 7)),
+        )
+
+        self.assertEqual(metrics["sampler_step_count"], 2)
+
+    def test_epoch_sampler_metrics_are_action_weighted(self):
+        aggregate = _aggregate_train_metrics([
+            (2, {
+                "sampler_loss": 2.0,
+                "mean_reward": 4.0,
+                "predictor_loss": 10.0,
+                "sampler_step_count": 1,
+            }),
+            (1, {
+                "sampler_loss": 4.0,
+                "mean_reward": 1.0,
+                "predictor_loss": 2.0,
+                "sampler_step_count": 3,
+            }),
+        ])
+
+        self.assertAlmostEqual(aggregate["sampler_loss"], 3.5)
+        self.assertAlmostEqual(aggregate["mean_reward"], 1.75)
+        self.assertAlmostEqual(aggregate["predictor_loss"], 22 / 3)
+
+    def test_no_action_batch_does_not_enter_sampler_denominator(self):
+        aggregate = _aggregate_train_metrics([
+            (2, {
+                "sampler_loss": 99.0,
+                "mean_reward": 99.0,
+                "predictor_loss": 3.0,
+                "sampler_step_count": 0,
+            }),
+            (1, {
+                "sampler_loss": 5.0,
+                "mean_reward": 7.0,
+                "predictor_loss": 6.0,
+                "sampler_step_count": 2,
+            }),
+        ])
+
+        self.assertEqual(aggregate["sampler_loss"], 5.0)
+        self.assertEqual(aggregate["mean_reward"], 7.0)
+        self.assertEqual(aggregate["predictor_loss"], 4.0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,7 @@ class AlternatingTrainer:
                 "value_loss": zero,
                 "baseline_loss": baseline_losses.mean().detach(),
                 "mean_reward": zero,
+                "sampler_step_count": 0,
             }
 
         with torch.no_grad():
@@ -122,6 +123,7 @@ class AlternatingTrainer:
             "value_loss": value_loss.detach(),
             "baseline_loss": baseline_losses.mean().detach(),
             "mean_reward": torch.stack(rewards).mean(),
+            "sampler_step_count": len(step_records),
         }
 
     def predictor_batch_step(self, node_features, edge_index, target_nodes, labels,
