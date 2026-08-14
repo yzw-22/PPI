@@ -5,11 +5,13 @@
 ## 代码结构
 
 - `src/ppi_graph.py`：加载数据、聚合标签并构建 train/val/test 局部图。
-- `src/sampler.py`：为每个目标 PPI 生成子图轨迹。
+- `src/sampler.py`：为每个目标 PPI 生成 learned 子图轨迹，并提供固定 seed 的随机一跳和随机逐步扩展消融 Sampler。
 - `src/predictor.py`：使用 GAT 编码子图并输出 7 维 logits。
 - `src/trainer.py`：交替更新 Sampler 和 Predictor。
 - `src/train_shs27k.py`：训练、验证和测试入口，支持 SHS27k、SHS148k 和 STRING。
 - `tests/`：图构建、采样、训练图选择和 RTG 测试。
+
+实验报告见 [docs/SHS27k_SAMPLER_ABLATION.md](docs/SHS27k_SAMPLER_ABLATION.md)，记录 SHS27k BFS/DFS 五种 Sampler 模式的可复现实验结果。
 
 ## 数据与 split 约束
 
@@ -26,10 +28,13 @@
 - `baseline_graph` 是唯一初始图 `G_0`。对 `u`、`v` 和实际存在的 proxy，分别从各自 split 内安全一跳邻居中最多采样 `fixed_num` 个节点；默认 `fixed_num=1`。
 - 一跳采样使用独立固定 seed `42`，重复节点合并去重，因此同一输入的 `G_0` 可复现。
 - `G_0` 保留所有已选节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
-- 后续动作候选是当前 frontier，不使用 hop 限制；动作最多执行 `max_steps` 次，默认 `max_steps=10`，当前没有 STOP 动作或双目标平衡约束。
+- 后续动作候选是当前 frontier，不使用 hop 限制；策略最多执行 `max_steps` 次决策，默认 `max_steps=10`。`fixed_num` 只限制每个实际初始 seed 的一跳采样数量，`max_steps` 只限制 action 次数；最终图大小取决于安全邻接、proxy 选择、节点去重和 frontier 候选，不使用派生的聚合上下文节点上限。策略包含显式 STOP 动作。
 - 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用贪心动作。
 - 动作 score 使用独立的 state/candidate 投影和 pairwise MLP：
   `Linear(2*hidden_dim→action_hidden) → LeakyReLU → Linear(action_hidden→1)`。
+- `RandomSubgraphSampler` 用于消融：从 `{u, v, proxy}` 的安全一跳邻居并集中最多采样 10 个节点，seed 固定为 `42`；随机图直接作为 `final_graph`，不产生动作。
+- `RandomIterativeSubgraphSampler` 复用 learned 的 `G0`，再从当前 frontier 每次随机扩展一个节点，最多扩展 10 次；无可学习参数，仅用于 Predictor 训练。
+- 当前 CLI 的合法 `--sampler-mode` 只有 `learned`、`target_only`、`target_proxy`、`random_1hop10` 和 `random_iterative10`；不存在旧的 `random` 模式。
 
 ## RL 与训练
 
@@ -62,6 +67,7 @@ L_{sampler}=L_{policy}+\beta L_{value}
 python -m src.train_shs27k \
   --dataset SHS27k \
   --split bfs \
+  --sampler-mode learned \
   --device cuda \
   --epochs 10 \
   --hidden-dim 256 \
@@ -69,6 +75,10 @@ python -m src.train_shs27k \
   --max-steps 10 \
   --reinforce-gamma 0.9
 ```
+
+固定基线模式为 `target_only`、`target_proxy`、`random_1hop10` 和 `random_iterative10`；这些模式均跳过 Sampler 更新，仅训练 Predictor。
+
+`run.sh` 默认执行 BFS 的五组实验；DFS 的五组命令和已完成实验结果见实验报告。
 
 测试集额外按训练节点可见性分为 BS、ES、NS；空分组返回 `count=0` 和 `None` 指标。
 

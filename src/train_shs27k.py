@@ -19,7 +19,11 @@ from sklearn.metrics import f1_score, roc_auc_score
 
 from .ppi_graph import PPIGraph
 from .predictor import PPIPredictor
-from .sampler import SubgraphSampler
+from .sampler import (
+    RandomIterativeSubgraphSampler,
+    RandomSubgraphSampler,
+    SubgraphSampler,
+)
 from .trainer import AlternatingTrainer
 
 
@@ -120,6 +124,14 @@ def _aggregate_train_metrics(batch_records):
     sampler_step_count = 0
     predictor_loss_total = 0.0
     sample_count = 0
+    diagnostic_totals = {
+        key: 0.0 for key in (
+            "mean_baseline_loss", "mean_final_loss", "mean_steps",
+            "mean_final_nodes", "mean_context_nodes", "mean_proxy_count",
+            "mean_real_edges", "stop_rate",
+        )
+    }
+    reward_positive_total = 0.0
     for batch_size, metrics in batch_records:
         steps = int(metrics["sampler_step_count"])
         sampler_loss_total += float(metrics["sampler_loss"]) * steps
@@ -129,8 +141,11 @@ def _aggregate_train_metrics(batch_records):
         sampler_size = int(batch_size)
         predictor_loss_total += float(metrics["predictor_loss"]) * sampler_size
         sample_count += sampler_size
+        for key in diagnostic_totals:
+            diagnostic_totals[key] += float(metrics.get(key, 0.0)) * sampler_size
+        reward_positive_total += float(metrics.get("reward_positive_rate", 0.0)) * sampler_size
 
-    return {
+    result = {
         "sampler_loss": (
             sampler_loss_total / sampler_step_count
             if sampler_step_count else 0.0
@@ -144,6 +159,14 @@ def _aggregate_train_metrics(batch_records):
             if sampler_step_count else 0.0
         ),
     }
+    result.update({
+        key: value / sample_count if sample_count else 0.0
+        for key, value in diagnostic_totals.items()
+    })
+    result["reward_positive_rate"] = (
+        reward_positive_total / sample_count if sample_count else 0.0
+    )
+    return result
 
 
 def run(args):
@@ -172,12 +195,36 @@ def run(args):
     test_targets = graph.ppi[test_indices]
     test_labels = graph.ppi_labels[test_indices]
 
-    sampler = SubgraphSampler(
-        esm_dim=esm_dim,
-        hidden_dim=args.hidden_dim,
-        max_steps=args.max_steps,
-        fixed_num=args.fixed_num,
-    ).to(device)
+    random_mode = args.sampler_mode != "learned"
+    if random_mode:
+        if args.sampler_mode == "random_iterative10":
+            sampler = RandomIterativeSubgraphSampler(
+                esm_dim=esm_dim,
+                fixed_num=args.fixed_num,
+                max_steps=10,
+                random_seed=42,
+            ).to(device)
+        elif args.sampler_mode == "target_only":
+            baseline_context_nodes, baseline_use_proxy = 0, False
+        elif args.sampler_mode == "target_proxy":
+            baseline_context_nodes, baseline_use_proxy = 0, True
+        else:  # random_1hop10
+            baseline_context_nodes, baseline_use_proxy = 10, True
+        if args.sampler_mode != "random_iterative10":
+            sampler = RandomSubgraphSampler(
+                esm_dim=esm_dim,
+                max_context_nodes=baseline_context_nodes,
+                use_proxy=baseline_use_proxy,
+                random_seed=42,
+            ).to(device)
+    else:
+        sampler = SubgraphSampler(
+            esm_dim=esm_dim,
+            hidden_dim=args.hidden_dim,
+            max_steps=args.max_steps,
+            fixed_num=args.fixed_num,
+            complexity_penalty=args.complexity_penalty,
+        ).to(device)
     predictor = PPIPredictor(
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
@@ -185,7 +232,11 @@ def run(args):
         heads=args.heads,
         dropout=args.dropout,
     ).to(device)
-    sampler_optimizer = torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
+    sampler_optimizer = (
+        torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
+        if not random_mode
+        else None
+    )
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
     trainer = AlternatingTrainer(
         sampler,
@@ -194,6 +245,7 @@ def run(args):
         predictor_optimizer,
         reinforce_baseline_coef=args.reinforce_baseline_coef,
         reinforce_gamma=args.reinforce_gamma,
+        complexity_penalty=args.complexity_penalty,
     )
 
     # Build the split-level adjacency once instead of once per batch; each
@@ -215,14 +267,31 @@ def run(args):
         for start in range(0, len(order), args.batch_size):
             batch_indices = order[start:start + args.batch_size]
             batch_size = batch_indices.numel()
-            metrics = trainer.alternating_batch_step(
-                train_graph["node_feat"],
-                train_graph["edge_index"],
-                train_targets[batch_indices],
-                train_labels[batch_indices],
-                train_graph["node_index"],
-                adjacency=train_adjacency,
-            )
+            if random_mode:
+                predictor_metrics = trainer.predictor_batch_step(
+                    train_graph["node_feat"],
+                    train_graph["edge_index"],
+                    train_targets[batch_indices],
+                    train_labels[batch_indices],
+                    train_graph["node_index"],
+                    adjacency=train_adjacency,
+                )
+                zero = train_graph["node_feat"].new_zeros(())
+                metrics = {
+                    "sampler_loss": zero,
+                    "mean_reward": zero,
+                    "sampler_step_count": 0,
+                    **predictor_metrics,
+                }
+            else:
+                metrics = trainer.alternating_batch_step(
+                    train_graph["node_feat"],
+                    train_graph["edge_index"],
+                    train_targets[batch_indices],
+                    train_labels[batch_indices],
+                    train_graph["node_index"],
+                    adjacency=train_adjacency,
+                )
             batch_records.append((batch_size, metrics))
 
         train_metrics = _aggregate_train_metrics(batch_records)
@@ -265,7 +334,10 @@ def run(args):
                         "epoch": epoch,
                         "sampler": sampler.state_dict(),
                         "predictor": predictor.state_dict(),
-                        "sampler_optimizer": sampler_optimizer.state_dict(),
+                        "sampler_optimizer": (
+                            sampler_optimizer.state_dict()
+                            if sampler_optimizer is not None else None
+                        ),
                         "predictor_optimizer": predictor_optimizer.state_dict(),
                     },
                     checkpoint_dir / f"best_{epoch}.pt",
@@ -328,6 +400,15 @@ def parse_args():
              "(SHS148k has no bfs, STRING only provides dfs)",
     )
     parser.add_argument(
+        "--sampler-mode",
+        choices=[
+            "learned", "target_only", "target_proxy", "random_1hop10",
+            "random_iterative10",
+        ],
+        default="learned",
+        help="learned sampler or an explicit fixed ablation baseline",
+    )
+    parser.add_argument(
         "--output", default=None,
         help="optional JSON path for saving experiment metrics",
     )
@@ -342,6 +423,10 @@ def parse_args():
     parser.add_argument("--eval-batch-size", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument(
+        "--complexity-penalty", type=float, default=0.0,
+        help="per-new-context reward penalty for learned sampling",
+    )
     parser.add_argument("--fixed-num", type=int, default=1)
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
@@ -358,6 +443,10 @@ def parse_args():
             f"{args.dataset!r}; expected one of "
             f"{PPIGraph.AVAILABLE_SPLITS[args.dataset]}"
         )
+    if args.max_steps < 0 or args.fixed_num < 0:
+        parser.error("max-steps and fixed-num must be non-negative")
+    if args.complexity_penalty < 0:
+        parser.error("complexity-penalty must be non-negative")
     return args
 
 

@@ -11,6 +11,26 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class _TargetSafeAdjacency:
+    """Lazy view of split adjacency with one target edge overlaid."""
+
+    def __init__(self, base, source, target):
+        self.base = base
+        self.source = int(source)
+        self.target = int(target)
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, index):
+        neighbors = self.base[index]
+        if index == self.source:
+            return neighbors - {self.target}
+        if index == self.target:
+            return neighbors - {self.source}
+        return neighbors
+
+
 @dataclass
 class SampledGraph:
     """A sampled subgraph in the coordinate system of ``node_features``."""
@@ -19,6 +39,10 @@ class SampledGraph:
     feature_index: torch.Tensor
     edge_index: torch.Tensor
     target_nodes: torch.Tensor
+    # Diagnostics are optional so existing callers can still construct graphs
+    # positionally.  ``proxy_nodes`` are split-local ids.
+    proxy_nodes: tuple = ()
+    real_edge_count: int = 0
 
 
 @dataclass
@@ -28,6 +52,7 @@ class SamplingStep:
     graph: SampledGraph
     log_prob: torch.Tensor
     value: torch.Tensor
+    is_stop: bool = False
 
 
 @dataclass
@@ -36,10 +61,22 @@ class SamplingTrajectory:
 
     baseline_graph: SampledGraph
     steps: list[SamplingStep]
+    proxy_nodes: tuple = ()
+    stopped: bool = False
 
     @property
     def final_graph(self):
         return self.steps[-1].graph if self.steps else self.baseline_graph
+
+    @property
+    def action_count(self):
+        return len(self.steps)
+
+    @property
+    def context_node_count(self):
+        # Baseline target_nodes are local graph positions; use graph size and
+        # the known proxy set for a stable, model-independent diagnostic.
+        return max(0, int(self.final_graph.node_index.numel()) - 2 - len(self.proxy_nodes))
 
 
 class SubgraphSampler(nn.Module):
@@ -54,11 +91,14 @@ class SubgraphSampler(nn.Module):
 
     ``fixed_num`` limits the number of deterministic, seed-42 sampled
     one-hop context nodes selected independently for each initial seed in
-    ``{u, v, proxy}``.
+    ``{u, v, proxy}``.  ``max_steps`` limits the number of policy actions.
+    The resulting graph size depends on safe adjacency, proxy selection,
+    duplicate removal, and frontier availability; there is no aggregate
+    context-node budget derived from these parameters.
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 fixed_num=1):
+                 fixed_num=1, complexity_penalty=0.0):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
@@ -69,6 +109,8 @@ class SubgraphSampler(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
         self.fixed_num = fixed_num
+        self.complexity_penalty = float(complexity_penalty)
+        self._normalized_feature_cache = {}
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.  The first MLP layer receives the
         # concatenated pair, so it can mix state and candidate features.
@@ -89,6 +131,9 @@ class SubgraphSampler(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
+        # A separate STOP logit makes termination an explicit policy action.
+        self.stop_head = nn.Linear(hidden_dim, 1)
+        nn.init.constant_(self.stop_head.bias, -2.0)
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
                training=None, adjacency=None):
@@ -114,23 +159,14 @@ class SubgraphSampler(nn.Module):
         node_features, edge_index, node_index, target_local = self._prepare_inputs(
             node_features, edge_index, target_nodes, node_index
         )
-        if adjacency is None:
-            safe_edges = self._remove_target_edges(edge_index, target_local)
-            adjacency = self._build_adjacency(safe_edges, node_features.shape[0])
-        else:
-            # ``adjacency`` is a shared immutable split-level structure; exclude
-            # the target edge lazily instead of deep-copying every neighbor set
-            # (O(E) per target).  Only the two target rows change, so patch the
-            # shallow list copy in place.
-            u, v = target_local.tolist()
-            adjacency = list(adjacency)
-            adjacency[u] = adjacency[u] - {v}
-            adjacency[v] = adjacency[v] - {u}
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
 
         u, v = target_local.tolist()
         selected = [u, v]
         graph_edges = set()
-        self._add_virtual_proxies(
+        proxy_nodes = self._add_virtual_proxies(
             selected, graph_edges, adjacency, node_features, target_local
         )
         selected.extend(self._sample_initial_neighbors(selected, adjacency))
@@ -138,7 +174,7 @@ class SubgraphSampler(nn.Module):
         # by its nodes, in addition to any virtual proxy edges.
         self._add_real_edges(selected, graph_edges, adjacency)
         baseline_graph = self._make_graph(
-            selected, graph_edges, target_local, node_index
+            selected, graph_edges, target_local, node_index, proxy_nodes
         )
         steps = []
 
@@ -171,7 +207,9 @@ class SubgraphSampler(nn.Module):
             state_repr = state_repr.expand(candidate_repr.shape[0], -1)
             attention_input = torch.cat((state_repr, candidate_repr), dim=-1)
             scores = self.action_mlp(attention_input).squeeze(-1)
-            probs = torch.softmax(scores, dim=0)
+            stop_logit = self.stop_head(state_repr[:1]).squeeze()
+            logits = torch.cat((scores, stop_logit.reshape(1)))
+            probs = torch.softmax(logits, dim=0)
             if training:
                 choice = torch.distributions.Categorical(probs).sample()
                 log_prob = torch.log(probs[choice])
@@ -179,19 +217,31 @@ class SubgraphSampler(nn.Module):
                 choice = probs.argmax()
                 log_prob = probs.new_zeros(())
 
+            value = self.value_head(state).squeeze(-1)
+            if int(choice) == len(candidates):
+                graph = self._make_graph(
+                    selected, graph_edges, target_local, node_index, proxy_nodes
+                )
+                steps.append(SamplingStep(graph, log_prob, value, is_stop=True))
+                return SamplingTrajectory(
+                    baseline_graph, steps, tuple(sorted(proxy_nodes)), stopped=True
+                )
             action = candidate_tensor[choice]
             action_int = int(action)
-            value = self.value_head(state).squeeze(-1)
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
             selected_set.add(action_int)
             frontier.discard(action_int)
             frontier.update(adjacency[action_int])
             frontier.difference_update(selected_set)
-            graph = self._make_graph(selected, graph_edges, target_local, node_index)
+            graph = self._make_graph(
+                selected, graph_edges, target_local, node_index, proxy_nodes
+            )
             steps.append(SamplingStep(graph, log_prob, value))
 
-        return SamplingTrajectory(baseline_graph, steps)
+        return SamplingTrajectory(
+            baseline_graph, steps, tuple(sorted(proxy_nodes)), stopped=False
+        )
 
     def forward(self, node_features, edge_index, target_nodes, node_index=None,
                 training=None, adjacency=None):
@@ -227,6 +277,16 @@ class SubgraphSampler(nn.Module):
         if not torch.equal(node_index[target_local], target_nodes):
             raise ValueError("target_nodes must be present in node_index")
         return node_features, edge_index.to(device=node_features.device), node_index, target_local
+
+    def _prepare_adjacency(self, edge_index, target_local, num_nodes, adjacency):
+        if adjacency is None:
+            safe_edges = self._remove_target_edges(edge_index, target_local)
+            return self._build_adjacency(safe_edges, num_nodes)
+
+        # ``adjacency`` is a shared immutable split-level structure; exclude
+        # the target edge lazily instead of deep-copying every neighbor set.
+        u, v = target_local.tolist()
+        return _TargetSafeAdjacency(adjacency, u, v)
 
     @staticmethod
     def _remove_target_edges(edge_index, target_nodes):
@@ -290,28 +350,41 @@ class SubgraphSampler(nn.Module):
 
     def _add_virtual_proxies(self, selected, graph_edges, adjacency,
                              node_features, target_local):
+        proxy_nodes = set()
+        cache_key = (node_features.data_ptr(), tuple(node_features.shape),
+                     str(node_features.device), getattr(node_features, "_version", 0))
+        normalized = self._normalized_feature_cache.get(cache_key)
+        if normalized is None or normalized.device != node_features.device:
+            normalized = F.normalize(node_features.float(), dim=1)
+            self._normalized_feature_cache[cache_key] = normalized
         available = torch.ones(node_features.shape[0], dtype=torch.bool,
                                device=node_features.device)
         available[target_local] = False
         for node in target_local.tolist():
             if adjacency[node] or not available.any():
                 continue
-            proxy = self._nearest_proxy(node_features[node], node_features, available)
+            proxy = self._nearest_proxy_normalized(normalized[node], normalized, available)
             proxy_int = int(proxy)
             if proxy_int not in selected:
                 selected.append(proxy_int)
+            proxy_nodes.add(proxy_int)
             graph_edges.add(tuple(sorted((node, proxy_int))))
+        return proxy_nodes
 
     @staticmethod
     def _nearest_proxy(node, node_features, available):
         node = F.normalize(node.float(), dim=0)
         candidates = F.normalize(node_features.float(), dim=1)
-        scores = candidates @ node
+        return SubgraphSampler._nearest_proxy_normalized(node, candidates, available)
+
+    @staticmethod
+    def _nearest_proxy_normalized(node, node_features, available):
+        scores = node @ node_features.T
         scores = scores.masked_fill(~available, -torch.inf)
         return scores.argmax()
 
     @staticmethod
-    def _make_graph(selected, graph_edges, target_local, node_index):
+    def _make_graph(selected, graph_edges, target_local, node_index, proxy_nodes=()):
         device = node_index.device
         selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
         local = {global_node: i for i, global_node in enumerate(selected)}
@@ -328,6 +401,159 @@ class SubgraphSampler(nn.Module):
             device=device,
             dtype=torch.long,
         )
+        target_set = {int(target_local[0]), int(target_local[1])}
+        real_edges = sum(
+            not ((source in proxy_nodes and target in target_set)
+                 or (target in proxy_nodes and source in target_set))
+            for source, target in graph_edges
+        )
         return SampledGraph(
-            node_index[selected_tensor], selected_tensor, edge_index, target_nodes
+            node_index[selected_tensor], selected_tensor, edge_index, target_nodes,
+            tuple(sorted(proxy_nodes)), int(real_edges)
+        )
+
+
+class RandomSubgraphSampler(SubgraphSampler):
+    """Build a fixed random one-hop subgraph for sampler ablations.
+
+    The target edge is removed exactly as in :class:`SubgraphSampler`.  A
+    deterministic embedding-nearest proxy is added when a target has no safe
+    neighbors, then at most ``max_context_nodes`` nodes are sampled without
+    replacement from the union of the safe one-hop neighborhoods of
+    ``{u, v, proxy}``.  The private seed is reset for each target so repeated
+    calls produce the same graph and do not affect the training RNG.
+    """
+
+    def __init__(self, esm_dim=2560, max_context_nodes=10, random_seed=42,
+                 use_proxy=True):
+        nn.Module.__init__(self)
+        if max_context_nodes < 0:
+            raise ValueError("max_context_nodes must be non-negative")
+        self.esm_dim = esm_dim
+        self.max_context_nodes = max_context_nodes
+        self.random_seed = random_seed
+        self.use_proxy = bool(use_proxy)
+        self._normalized_feature_cache = {}
+
+    def sample(self, node_features, edge_index, target_nodes, node_index=None,
+               training=None, adjacency=None):
+        node_features, edge_index, node_index, target_local = self._prepare_inputs(
+            node_features, edge_index, target_nodes, node_index
+        )
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
+
+        selected = target_local.tolist()
+        graph_edges = set()
+        proxy_nodes = set()
+        if self.use_proxy:
+            proxy_nodes = self._add_virtual_proxies(
+                selected, graph_edges, adjacency, node_features, target_local
+            )
+        selected_set = set(selected)
+        candidates = sorted({
+            neighbor
+            for node in selected
+            for neighbor in adjacency[node]
+            if neighbor not in selected_set
+        })
+        if len(candidates) > self.max_context_nodes:
+            generator = torch.Generator(device="cpu").manual_seed(self.random_seed)
+            positions = torch.randperm(
+                len(candidates), generator=generator
+            )[:self.max_context_nodes].tolist()
+            candidates = [candidates[position] for position in positions]
+        selected.extend(candidates)
+        self._add_real_edges(selected, graph_edges, adjacency)
+        graph = self._make_graph(
+            selected, graph_edges, target_local, node_index, proxy_nodes
+        )
+        return SamplingTrajectory(graph, [], tuple(sorted(proxy_nodes)), stopped=False)
+
+    def forward(self, node_features, edge_index, target_nodes, node_index=None,
+                training=None, adjacency=None):
+        return self.sample(
+            node_features, edge_index, target_nodes, node_index, training, adjacency
+        )
+
+
+class RandomIterativeSubgraphSampler(SubgraphSampler):
+    """Expand the learned sampler's G0 with deterministic random actions.
+
+    The initial graph and frontier are identical to :class:`SubgraphSampler`,
+    but each action selects one current frontier node using a private seed-42
+    generator.  This module deliberately has no learnable parameters: its
+    trajectories are used only for the Predictor update in ablation runs.
+    """
+
+    def __init__(self, esm_dim=2560, fixed_num=1, max_steps=10,
+                 random_seed=42):
+        nn.Module.__init__(self)
+        if fixed_num < 0:
+            raise ValueError("fixed_num must be non-negative")
+        if max_steps < 0:
+            raise ValueError("max_steps must be non-negative")
+        self.esm_dim = esm_dim
+        self.fixed_num = fixed_num
+        self.max_steps = max_steps
+        self.random_seed = random_seed
+        self._normalized_feature_cache = {}
+
+    def sample(self, node_features, edge_index, target_nodes, node_index=None,
+               training=None, adjacency=None):
+        node_features, edge_index, node_index, target_local = self._prepare_inputs(
+            node_features, edge_index, target_nodes, node_index
+        )
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
+
+        selected = target_local.tolist()
+        graph_edges = set()
+        proxy_nodes = self._add_virtual_proxies(
+            selected, graph_edges, adjacency, node_features, target_local
+        )
+        selected.extend(self._sample_initial_neighbors(selected, adjacency))
+        self._add_real_edges(selected, graph_edges, adjacency)
+        baseline_graph = self._make_graph(
+            selected, graph_edges, target_local, node_index, proxy_nodes
+        )
+
+        selected_set = set(selected)
+        frontier = set()
+        for node in selected:
+            frontier.update(adjacency[node])
+        frontier.difference_update(selected_set)
+
+        generator = torch.Generator(device="cpu").manual_seed(self.random_seed)
+        zero = node_features.new_zeros(())
+        steps = []
+        for _ in range(self.max_steps):
+            candidates = sorted(frontier)
+            if not candidates:
+                break
+            position = int(torch.randperm(
+                len(candidates), generator=generator
+            )[0])
+            action_int = candidates[position]
+            self._add_action_edges(action_int, selected, graph_edges, adjacency)
+            selected.append(action_int)
+            selected_set.add(action_int)
+            frontier.discard(action_int)
+            frontier.update(adjacency[action_int])
+            frontier.difference_update(selected_set)
+            graph = self._make_graph(
+                selected, graph_edges, target_local, node_index, proxy_nodes
+            )
+            steps.append(SamplingStep(graph, zero, zero))
+
+        return SamplingTrajectory(
+            baseline_graph, steps, tuple(sorted(proxy_nodes)), stopped=False
+        )
+
+    def forward(self, node_features, edge_index, target_nodes, node_index=None,
+                training=None, adjacency=None):
+        return self.sample(
+            node_features, edge_index, target_nodes, node_index, training, adjacency
         )

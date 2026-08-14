@@ -3,7 +3,14 @@ import unittest
 import torch
 from torch import nn
 
-from src.sampler import SampledGraph, SamplingStep, SamplingTrajectory
+from src.predictor import PPIPredictor
+from src.sampler import (
+    RandomIterativeSubgraphSampler,
+    RandomSubgraphSampler,
+    SampledGraph,
+    SamplingStep,
+    SamplingTrajectory,
+)
 from src.train_shs27k import _aggregate_train_metrics
 from src.trainer import AlternatingTrainer
 
@@ -183,6 +190,50 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         self.assertEqual(aggregate["sampler_loss"], 5.0)
         self.assertEqual(aggregate["mean_reward"], 7.0)
         self.assertEqual(aggregate["predictor_loss"], 4.0)
+
+    def test_random_sampler_can_train_predictor_without_sampler_optimizer(self):
+        sampler = RandomSubgraphSampler(esm_dim=2, max_context_nodes=10)
+        predictor = PPIPredictor(
+            esm_dim=2, hidden_dim=4, num_layers=1, heads=1, dropout=0.0
+        )
+        trainer = AlternatingTrainer(
+            sampler,
+            predictor,
+            None,
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+        )
+
+        metrics = trainer.predictor_batch_step(
+            torch.randn((2, 2)),
+            torch.empty((2, 0), dtype=torch.long),
+            torch.tensor([[0, 1]]),
+            torch.zeros((1, 7)),
+        )
+
+        self.assertIn("predictor_loss", metrics)
+
+    def test_random_iterative_sampler_can_train_predictor_without_sampler_optimizer(self):
+        sampler = RandomIterativeSubgraphSampler(
+            esm_dim=2, fixed_num=0, max_steps=2, random_seed=42
+        )
+        predictor = PPIPredictor(
+            esm_dim=2, hidden_dim=4, num_layers=1, heads=1, dropout=0.0
+        )
+        trainer = AlternatingTrainer(
+            sampler,
+            predictor,
+            None,
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+        )
+
+        metrics = trainer.predictor_batch_step(
+            torch.randn((4, 2)),
+            torch.tensor([[0, 1, 1], [1, 0, 2]]),
+            torch.tensor([[0, 1]]),
+            torch.zeros((1, 7)),
+        )
+
+        self.assertIn("predictor_loss", metrics)
 
 if __name__ == "__main__":
     unittest.main()

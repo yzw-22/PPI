@@ -1,5 +1,7 @@
 # 核心代码设计
 
+完整的 SHS27k BFS/DFS 消融结果与复现命令见 [../docs/SHS27k_SAMPLER_ABLATION.md](../docs/SHS27k_SAMPLER_ABLATION.md)。
+
 ## PPIGraph
 
 - `PPIGraph(name, split, root, device, cache_dir)` 加载一个数据集及其 split。
@@ -24,7 +26,9 @@
 - 对 `u`、`v` 和实际存在的 proxy，分别从各自安全一跳邻居中最多采样 `fixed_num` 个节点，默认 `fixed_num=1`。
 - 一跳采样使用独立 seed `42`，重复节点去重。
 - `G_0` 保留已选节点之间的全部安全诱导边和虚拟 proxy 边。
-- 后续候选为当前 frontier，不使用 hop 限制；最多执行 `max_steps` 次动作，默认值为 `10`，无 STOP 动作。
+- 后续候选为当前 frontier，不使用 hop 限制；最多执行 `max_steps` 次策略决策，默认值为 `10`。
+- `fixed_num` 仅限制每个实际初始 seed 的一跳采样数量，`max_steps` 仅限制策略 action 次数；最终图大小取决于安全邻接、proxy 选择、节点去重和 frontier 候选，不使用派生的聚合上下文节点上限。
+- 策略包含显式 STOP 决策；达到 `max_steps` 上限时也会终止。
 - `SamplingTrajectory.final_graph` 返回最后一步图；若没有动作则返回 `baseline_graph`。
 
 ### Action score
@@ -39,6 +43,20 @@ Linear(2*hidden_dim → action_hidden)
 ```
 
 训练时记录 Categorical action 的 `log_prob`；评估时使用 greedy argmax。Sampler 参数通过 REINFORCE 更新，离散节点选择、Python 邻接和 frontier 属于环境逻辑，不通过普通反向传播求导。
+
+### RandomSubgraphSampler（消融）
+
+- 从当前 split 的安全邻接中确定必要的 proxy，再从 `{u, v, proxy}` 的一跳邻居并集随机抽取最多配置数量的上下文节点。
+- 使用私有 seed `42`，同一 target 的图可复现；目标边仍双向移除。
+- 只返回无 action 的 `baseline_graph`/`final_graph`，训练时跳过 Sampler 更新，仅更新 Predictor。
+
+### RandomIterativeSubgraphSampler（消融）
+
+- 复用 learned Sampler 的 `G0` 和当前 frontier。
+- 每步从排序后的 frontier 中用私有 seed `42` 随机选择一个节点，最多扩展 10 次。
+- 无可学习参数，不执行 REINFORCE，仅使用最终图更新 Predictor。
+
+CLI 只暴露五种模式：`learned`、`target_only`、`target_proxy`、`random_1hop10`、`random_iterative10`；旧的随机模式和独立上下文预算参数均不再支持。
 
 ## AlternatingTrainer
 
