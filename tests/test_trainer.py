@@ -34,6 +34,83 @@ class ReturnToGoTest(unittest.TestCase):
         self.assertEqual(AlternatingTrainer._return_to_go([], gamma=1.0), [])
 
 
+class RewardShapingTest(unittest.TestCase):
+    def test_expansion_rewards_are_incremental_and_stop_is_zero(self):
+        trajectory = SamplingTrajectory(
+            baseline_graph=_graph([0, 1]),
+            steps=[
+                SamplingStep(
+                    _graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)
+                ),
+                SamplingStep(
+                    _graph([0, 1, 2, 3]),
+                    torch.tensor(0.0),
+                    torch.tensor(0.0),
+                ),
+                SamplingStep(
+                    _graph([0, 1, 2, 3]),
+                    torch.tensor(0.0),
+                    torch.tensor(0.0),
+                    is_stop=True,
+                ),
+            ],
+        )
+
+        rewards = AlternatingTrainer._trajectory_rewards(
+            trajectory,
+            torch.tensor(1.0),
+            torch.tensor([0.8, 0.7, 0.7]),
+            complexity_penalty=0.1,
+        )
+
+        for reward, expected in zip(rewards, [0.1, 0.0, 0.0]):
+            self.assertAlmostEqual(float(reward), expected, places=6)
+
+    def test_first_step_stop_has_zero_reward(self):
+        trajectory = SamplingTrajectory(
+            baseline_graph=_graph([0, 1]),
+            steps=[
+                SamplingStep(
+                    _graph([0, 1]),
+                    torch.tensor(0.0),
+                    torch.tensor(0.0),
+                    is_stop=True,
+                ),
+            ],
+        )
+
+        rewards = AlternatingTrainer._trajectory_rewards(
+            trajectory, torch.tensor(1.0), torch.tensor([0.4]),
+            complexity_penalty=1.0,
+        )
+
+        self.assertEqual(float(rewards[0]), 0.0)
+
+    def test_rewards_telescope_to_final_improvement_and_total_penalty(self):
+        trajectory = SamplingTrajectory(
+            baseline_graph=_graph([0, 1]),
+            steps=[
+                SamplingStep(
+                    _graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)
+                ),
+                SamplingStep(
+                    _graph([0, 1, 2, 3]),
+                    torch.tensor(0.0),
+                    torch.tensor(0.0),
+                ),
+            ],
+        )
+
+        rewards = AlternatingTrainer._trajectory_rewards(
+            trajectory,
+            torch.tensor(1.0),
+            torch.tensor([0.8, 0.7]),
+            complexity_penalty=0.1,
+        )
+
+        self.assertAlmostEqual(sum(float(reward) for reward in rewards), 0.1)
+
+
 class _RecordingSampler(nn.Module):
     def __init__(self, trajectory):
         super().__init__()

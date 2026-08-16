@@ -69,10 +69,6 @@ class SamplingTrajectory:
         return self.steps[-1].graph if self.steps else self.baseline_graph
 
     @property
-    def action_count(self):
-        return len(self.steps)
-
-    @property
     def context_node_count(self):
         # Baseline target_nodes are local graph positions; use graph size and
         # the known proxy set for a stable, model-independent diagnostic.
@@ -98,7 +94,7 @@ class SubgraphSampler(nn.Module):
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 fixed_num=1, complexity_penalty=0.0):
+                 fixed_num=1):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
@@ -109,7 +105,6 @@ class SubgraphSampler(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_steps = max_steps
         self.fixed_num = fixed_num
-        self.complexity_penalty = float(complexity_penalty)
         self._normalized_feature_cache = {}
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.  The first MLP layer receives the
@@ -370,12 +365,6 @@ class SubgraphSampler(nn.Module):
             proxy_nodes.add(proxy_int)
             graph_edges.add(tuple(sorted((node, proxy_int))))
         return proxy_nodes
-
-    @staticmethod
-    def _nearest_proxy(node, node_features, available):
-        node = F.normalize(node.float(), dim=0)
-        candidates = F.normalize(node_features.float(), dim=1)
-        return SubgraphSampler._nearest_proxy_normalized(node, candidates, available)
 
     @staticmethod
     def _nearest_proxy_normalized(node, node_features, available):

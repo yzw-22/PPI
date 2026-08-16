@@ -22,7 +22,7 @@
 
 - 同一 trajectory 中候选节点可能重复经过 `neighbor_proj`；
 - 每一步都重新索引 selected nodes 并计算 embedding 均值；
-- `_nearest_proxy()` 每次都重新归一化整个节点 embedding 矩阵并扫描余弦相似度；
+- 代理选择仍需扫描当前 split 的归一化 embedding 相似度；
 - 同一个 PPI 的 `G_0` 在 Sampler 更新、Predictor 更新、验证和测试中重复构造。
 
 ### 5. 每个 target 的邻接表复制

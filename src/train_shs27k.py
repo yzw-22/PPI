@@ -223,7 +223,6 @@ def run(args):
             hidden_dim=args.hidden_dim,
             max_steps=args.max_steps,
             fixed_num=args.fixed_num,
-            complexity_penalty=args.complexity_penalty,
         ).to(device)
     predictor = PPIPredictor(
         esm_dim=esm_dim,

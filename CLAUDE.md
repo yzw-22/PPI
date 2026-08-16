@@ -11,7 +11,7 @@
 - `src/train_shs27k.py`：训练、验证和测试入口，支持 SHS27k、SHS148k 和 STRING。
 - `tests/`：图构建、采样、训练图选择和 RTG 测试。
 
-实验报告见 [docs/SHS27k_SAMPLER_ABLATION.md](docs/SHS27k_SAMPLER_ABLATION.md)，记录 SHS27k BFS/DFS 五种 Sampler 模式的可复现实验结果。
+实验报告位于 `docs/`：BFS 主实验、gamma/复杂度惩罚消融和 main 分支基线均有独立报告。
 
 ## 数据与 split 约束
 
@@ -38,10 +38,16 @@
 
 ## RL 与训练
 
-每条轨迹的奖励和 return-to-go 为：
+每条轨迹使用相邻图之间的增量奖励和 return-to-go。普通扩展动作的奖励为：
 
 \[
-r_t=L_{G_0}-L_t, \qquad G_t=r_t+\gamma G_{t+1}
+r_t=L_{t-1}-L_t-\lambda\Delta n_t
+\]
+
+其中 \(\Delta n_t\) 是本步新增的非 baseline 节点数；显式 DONE/STOP 动作的奖励为 \(r_t=0\)。因此 DONE 不会重复获得前一步图的收益。return-to-go 为：
+
+\[
+G_t=r_t+\gamma G_{t+1}
 \]
 
 Sampler 更新为：

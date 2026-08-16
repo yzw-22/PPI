@@ -1,6 +1,6 @@
 # 核心代码设计
 
-完整的 SHS27k BFS/DFS 消融结果与复现命令见 [../docs/SHS27k_SAMPLER_ABLATION.md](../docs/SHS27k_SAMPLER_ABLATION.md)。
+SHS27k 实验结果与复现命令见上级目录的 `docs/` 报告；当前代码说明以本文件和仓库根目录 `CLAUDE.md` 为准。
 
 ## PPIGraph
 
@@ -64,7 +64,7 @@ Sampler 更新阶段：
 
 1. 冻结 Predictor，随机生成 trajectory。
 2. 计算 `G_0` 和所有 step graph 的 Predictor BCE loss。
-3. 使用 `r_t = L_{G_0} - L_t`。
+3. 普通扩展动作使用增量奖励 `r_t = L_{t-1} - L_t - lambda * delta_extra_nodes`；显式 STOP/DONE 动作奖励为 `0`，复杂度惩罚只计算本步新增节点。
 4. 对每条 trajectory 从后向前计算 `G_t = r_t + gamma * G_{t+1}`。
 5. 使用 `policy_loss`、`value_loss` 和 `sampler_loss` 更新 Sampler。
 

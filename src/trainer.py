@@ -91,17 +91,17 @@ class AlternatingTrainer:
         rewards_by_trajectory = [[] for _ in trajectories]
         record_index = 0
         for sample_index, trajectory in enumerate(trajectories):
-            for step in trajectory.steps:
-                extra_nodes = max(
-                    0,
-                    int(step.graph.node_index.numel())
-                    - int(trajectory.baseline_graph.node_index.numel()),
-                )
-                rewards_by_trajectory[sample_index].append((
-                    baseline_losses[sample_index] - step_losses[record_index]
-                    - self.complexity_penalty * extra_nodes
-                ).detach())
-                record_index += 1
+            step_count = len(trajectory.steps)
+            trajectory_step_losses = step_losses[
+                record_index:record_index + step_count
+            ]
+            rewards_by_trajectory[sample_index] = self._trajectory_rewards(
+                trajectory,
+                baseline_losses[sample_index],
+                trajectory_step_losses,
+                self.complexity_penalty,
+            )
+            record_index += step_count
 
         returns_by_trajectory = [
             self._return_to_go(rewards, self.reinforce_gamma)
@@ -275,6 +275,44 @@ class AlternatingTrainer:
             running = rewards[index] + gamma * running
             returns[index] = running
         return returns
+
+    @staticmethod
+    def _trajectory_rewards(trajectory, baseline_loss, step_losses,
+                            complexity_penalty=0.0):
+        """Compute incremental rewards for one sampled trajectory.
+
+        A regular expansion is rewarded by the predictor-loss improvement over
+        the immediately preceding graph.  STOP is a terminal decision that
+        does not change the graph, so it receives no duplicate graph reward.
+        Complexity is charged only for nodes newly added by the current
+        expansion, rather than repeatedly charging all nodes added so far.
+        """
+        if len(trajectory.steps) != len(step_losses):
+            raise ValueError("step_losses must match trajectory.steps")
+
+        baseline_node_count = int(trajectory.baseline_graph.node_index.numel())
+        previous_loss = baseline_loss
+        previous_extra_nodes = 0
+        rewards = []
+        for step, current_loss in zip(trajectory.steps, step_losses):
+            current_extra_nodes = max(
+                0,
+                int(step.graph.node_index.numel()) - baseline_node_count,
+            )
+            if step.is_stop:
+                reward = current_loss.new_zeros(())
+            else:
+                new_extra_nodes = max(
+                    0, current_extra_nodes - previous_extra_nodes
+                )
+                reward = (
+                    previous_loss - current_loss
+                    - complexity_penalty * new_extra_nodes
+                )
+            rewards.append(reward.detach())
+            previous_loss = current_loss
+            previous_extra_nodes = current_extra_nodes
+        return rewards
 
     @staticmethod
     def _set_requires_grad(module, value):
