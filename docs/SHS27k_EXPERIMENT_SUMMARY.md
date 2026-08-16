@@ -136,3 +136,69 @@ NS 结果对 seed 和惩罚系数较敏感；BS 为空，无法评估双端均�
 - learned sampler 相对固定基线的精度收益有限，扩大实验规模前应先优化计算路径并进行严格配对消融。
 
 原始 JSON 保留在 `/tmp/ppi_shs27k_*.json`；本汇总保留历史数值，即使部分输出文件后来被同一路径实验覆盖，也不会影响表中记录。
+
+## 8. DFS 实验（本次 `run.sh` 运行）
+
+本次将 `run.sh` 的 split 从 BFS 改为 DFS 后，按原配置顺序运行五种 sampler：10 epochs、CUDA、seed=42、`reinforce_gamma=1.0`、`complexity_penalty=0`。结果文件为 `/tmp/ppi_shs27k_dfs_*.json`。DFS 测试集共 1529 个 PPI，其中 ES=1215、NS=314、BS=0。
+
+### 8.1 总体结果
+
+| sampler | 最佳 epoch | Val Macro-AUC | Test Macro-AUC | Test Micro-AUC | Test Macro-F1 | Test Micro-F1 | 时间(s) | 平均步数 | STOP rate | 最终节点数 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| learned | 10 | 0.8153 | 0.8095 | 0.8250 | 0.5782 | 0.6189 | 1389.8 | 9.96 | 0.72% | 14.02 |
+| target_only | 10 | 0.8265 | 0.8212 | **0.8430** | 0.5966 | **0.6608** | 31.8 | 0.00 | 0% | 2.00 |
+| target_proxy | 10 | 0.8255 | **0.8211** | 0.8379 | **0.6026** | 0.6534 | 38.4 | 0.00 | 0% | 2.09 |
+| random_1hop10 | 9 | 0.8139 | 0.8139 | 0.8230 | 0.5746 | 0.6176 | 42.3 | 0.00 | 0% | 11.68 |
+| random_iterative10 | 10 | 0.8169 | 0.8091 | 0.8238 | 0.5795 | 0.6208 | 143.4 | 9.99 | 0% | 14.06 |
+
+### 8.2 ES/NS/BS 分组结果
+
+下表为测试集分组的 Macro/Micro-AUC 与 Macro/Micro-F1；BS 由于没有样本，所有指标均未定义。
+
+| sampler | ES AUC (Macro/Micro) | NS AUC (Macro/Micro) | ES F1 (Macro/Micro) | NS F1 (Macro/Micro) |
+|---|---:|---:|---:|---:|
+| learned | 0.8244 / 0.8394 | 0.7411 / 0.7565 | 0.6049 / 0.6409 | 0.4589 / 0.5163 |
+| target_only | 0.8378 / 0.8588 | 0.7432 / 0.7657 | 0.6214 / 0.6866 | 0.4809 / 0.5467 |
+| target_proxy | 0.8359 / 0.8515 | **0.7522 / 0.7731** | **0.6228 / 0.6728** | **0.5134 / 0.5663** |
+| random_1hop10 | 0.8270 / 0.8344 | 0.7526 / 0.7700 | 0.5930 / 0.6381 | 0.4876 / 0.5255 |
+| random_iterative10 | 0.8223 / 0.8340 | 0.7430 / 0.7761 | 0.5966 / 0.6413 | 0.4995 / 0.5286 |
+
+### 8.3 与 BFS 的对比和结论
+
+- DFS 的测试指标整体高于此前 BFS：learned 的 Test Macro/Micro-AUC 从 `0.7479/0.7877` 提升到 `0.8095/0.8250`，Macro/Micro-F1 从 `0.5465/0.6070` 提升到 `0.5782/0.6189`。这反映 split 的训练/测试节点可见性不同，不应解释为 sampler 改动带来的因果提升。
+- DFS 中固定 sampler 明显优于 learned：`target_only` 的 Macro-AUC 最高（0.8212），`target_proxy` 的 Macro-F1 最高（0.6026），同时耗时仅约 32–38 秒；learned 耗时约 1389.8 秒，约为固定 sampler 的 33–44 倍。
+- learned 与 random_iterative10 的最终图规模接近（约 14 个节点、约 10 步），但 learned 的 Macro-AUC/F1 略高，说明学习到的节点选择仍有收益，但收益不足以抵消当前计算成本。
+- DFS 的 NS 指标仍低于 ES，尤其 learned 的 NS Macro-F1 仅 0.4589；BS 为空，无法评价双端节点均见于训练集的泛化。
+- 本次 DFS 结果支持先采用固定 sampler 作为低成本基线，并优先优化 learned sampler 的 predictor 前向、动态图构造和轨迹采样开销；learned 的早停率仍低于 1%，说明在 `lambda=0` 下策略基本执行满步。
+
+## 9. Random split 实验（本次 `run.sh` 运行）
+
+本次将 `run.sh` 的 split 从 DFS 改为 `random`，其余配置保持不变：10 epochs、CUDA、seed=42、`reinforce_gamma=1.0`、`complexity_penalty=0`。结果文件为 `/tmp/ppi_shs27k_random_*.json`。随机划分测试集共 1525 个 PPI，其中 BS=1377、ES=138、NS=10；NS 样本过少，所有配置的 NS Macro-AUC 均不可定义。
+
+### 9.1 总体结果
+
+| sampler | 最佳 epoch | Val Macro-AUC | Test Macro-AUC | Test Micro-AUC | Test Macro-F1 | Test Micro-F1 | 时间(s) | 平均步数 | STOP rate | 最终节点数 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| learned | 10 | 0.9054 | 0.9092 | 0.9173 | 0.7251 | 0.7608 | 1385.9 | 9.98 | 0.04% | 14.06 |
+| target_only | 10 | 0.9391 | 0.9413 | **0.9503** | **0.7875** | **0.8255** | 31.3 | 0.00 | 0% | 2.00 |
+| target_proxy | 10 | 0.9371 | **0.9417** | 0.9493 | 0.7802 | 0.8240 | 36.6 | 0.00 | 0% | 2.09 |
+| random_1hop10 | 10 | 0.9103 | 0.9198 | 0.9314 | 0.7266 | 0.7830 | 43.3 | 0.00 | 0% | 11.70 |
+| random_iterative10 | 9 | 0.9097 | 0.9207 | 0.9260 | 0.7190 | 0.7649 | 149.7 | 9.98 | 0% | 14.06 |
+
+### 9.2 BS/ES/NS 分组结果
+
+| sampler | BS AUC (Macro/Micro) | ES AUC (Macro/Micro) | NS AUC (Macro/Micro) | BS F1 (Macro/Micro) | ES F1 (Macro/Micro) | NS F1 (Macro/Micro) |
+|---|---:|---:|---:|---:|---:|---:|
+| learned | 0.9150 / 0.9222 | 0.8495 / 0.8707 | — / 0.7081 | 0.7412 / 0.7744 | 0.4414 / 0.6052 | 0.1071 / 0.3750 |
+| target_only | 0.9485 / 0.9567 | 0.8473 / 0.8758 | — / 0.7037 | **0.8052 / 0.8437** | 0.5614 / 0.6255 | 0.1524 / 0.3871 |
+| target_proxy | **0.9494 / 0.9561** | 0.8537 / 0.8700 | — / 0.5649 | 0.7958 / 0.8397 | **0.5834 / 0.6430** | 0.0816 / 0.2963 |
+| random_1hop10 | 0.9263 / 0.9371 | 0.8462 / 0.8726 | — / 0.6881 | 0.7419 / 0.7967 | 0.4670 / 0.6203 | 0.1973 / 0.4444 |
+| random_iterative10 | 0.9266 / 0.9310 | **0.8657 / 0.8762** | — / 0.6548 | 0.7302 / 0.7785 | 0.5532 / 0.6032 | 0.0879 / 0.2857 |
+
+### 9.3 结论与跨 split 对比
+
+- Random split 的总体指标明显高于 BFS/DFS，主要原因是 BS 样本占测试集约 90%，而 BFS 没有 BS、DFS 也没有 BS；因此三种 split 的总体数值不能直接作为 sampler 的因果比较。
+- 固定 sampler 在 random split 仍优于 learned：`target_proxy` 的 Test Macro-AUC 最高（0.9417），`target_only` 的 Micro-AUC、Macro-F1 和 Micro-F1 最高（0.9503、0.7875、0.8255），耗时仅约 31–37 秒。
+- learned 的测试 Macro-AUC 为 0.9092，约 1386 秒；相比 DFS 的 learned 结果（Macro-AUC 0.8095），random split 提升主要来自 BS 可见性结构，而非训练策略本身。
+- random split 的 NS 只有 10 个测试样本，Macro-AUC 均未定义，F1 波动很大；ES 也仅 138 个样本。后续应同时报告分组指标和样本数，避免被 BS 主导的总体指标误导。
+- `lambda=0` 下 learned 与 random_iterative10 都执行约 10 步，STOP rate 接近 0%，再次表明当前奖励设置不会主动产生稳定的中等长度轨迹。
