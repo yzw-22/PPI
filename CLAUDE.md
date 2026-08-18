@@ -53,7 +53,13 @@ G_t=r_t+\gamma G_{t+1}
 Sampler 更新为：
 
 \[
-L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(G_t-V(s_t))
+\hat A_t=\frac{A_t-\operatorname{mean}_{\mathrm{batch}}(A)}
+{\max(\operatorname{std}_{\mathrm{batch}}(A),10^{-8})},
+\qquad A_t=G_t-V(s_t)
+\]
+
+\[
+L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t)
 \]
 
 \[
@@ -61,7 +67,7 @@ L_{value}=\operatorname{MSE}(V(s_t),G_t), \qquad
 L_{sampler}=L_{policy}+\beta L_{value}
 \]
 
-- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算奖励。
+- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算奖励；同一 sampler batch 的全部动作 step 使用标准化 advantage，value loss 仍回归原始 return-to-go。
 - Predictor 更新时 Sampler 冻结，只使用每条贪心轨迹的 `final_graph`；无动作时 `final_graph` 就是 `G_0`。
 - F1 使用固定阈值 `0.5`。
 - 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态，训练结束后仅在最佳状态上测试一次。

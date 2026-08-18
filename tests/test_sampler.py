@@ -34,6 +34,26 @@ def _trajectory_signature(trajectory):
 
 
 class SubgraphSamplerTest(unittest.TestCase):
+    def test_sampled_steps_record_finite_policy_entropy(self):
+        node_features = torch.eye(5, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 3, 2, 4],
+            [2, 3, 0, 0, 1, 1, 4, 2],
+        ])
+        sampler = SubgraphSampler(
+            esm_dim=5, hidden_dim=4, max_steps=1, fixed_num=0,
+        )
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(len(trajectory.steps), 1)
+        entropy = trajectory.steps[0].entropy
+        self.assertIsNotNone(entropy)
+        self.assertTrue(torch.isfinite(entropy))
+        self.assertGreaterEqual(float(entropy), 0.0)
+
     def test_max_steps_limits_learned_actions(self):
         node_features = torch.eye(8, dtype=torch.float32)
         edge_index = torch.tensor([

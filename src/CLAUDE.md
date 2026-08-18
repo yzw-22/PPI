@@ -66,7 +66,7 @@ Sampler 更新阶段：
 2. 计算 `G_0` 和所有 step graph 的 Predictor BCE loss。
 3. 普通扩展动作使用增量奖励 `r_t = L_{t-1} - L_t - lambda * delta_extra_nodes`；显式 STOP/DONE 动作奖励为 `0`，复杂度惩罚只计算本步新增节点。
 4. 对每条 trajectory 从后向前计算 `G_t = r_t + gamma * G_{t+1}`。
-5. 使用 `policy_loss`、`value_loss` 和 `sampler_loss` 更新 Sampler。
+5. 将该 batch 全部动作 step 的 detached `G_t - V(s_t)` 标准化后计算 `policy_loss`；`value_loss` 仍使用原始 `G_t`，再更新 Sampler。
 
 Predictor 更新阶段：
 

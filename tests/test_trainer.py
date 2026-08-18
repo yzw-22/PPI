@@ -34,6 +34,23 @@ class ReturnToGoTest(unittest.TestCase):
         self.assertEqual(AlternatingTrainer._return_to_go([], gamma=1.0), [])
 
 
+class AdvantageNormalizationTest(unittest.TestCase):
+    def test_advantages_are_standardized_over_the_batch(self):
+        normalized = AlternatingTrainer._normalize_advantages(
+            torch.tensor([-2.0, 1.0, 4.0])
+        )
+
+        self.assertAlmostEqual(float(normalized.mean()), 0.0, places=6)
+        self.assertAlmostEqual(
+            float(normalized.std(unbiased=False)), 1.0, places=6
+        )
+
+    def test_single_advantage_normalizes_to_zero(self):
+        normalized = AlternatingTrainer._normalize_advantages(torch.tensor([3.0]))
+
+        self.assertEqual(float(normalized.item()), 0.0)
+
+
 class RewardShapingTest(unittest.TestCase):
     def test_expansion_rewards_are_incremental_and_stop_is_zero(self):
         trajectory = SamplingTrajectory(
@@ -227,6 +244,10 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         )
 
         self.assertEqual(metrics["sampler_step_count"], 2)
+        self.assertTrue(torch.isfinite(metrics["sampler_grad_norm"]))
+        self.assertGreaterEqual(float(metrics["sampler_grad_norm"]), 0.0)
+        self.assertEqual(metrics["stop_action_count"], 0)
+        self.assertIsNone(metrics["mean_stop_raw_advantage"])
 
     def test_epoch_sampler_metrics_are_action_weighted(self):
         aggregate = _aggregate_train_metrics([
@@ -247,6 +268,49 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         self.assertAlmostEqual(aggregate["sampler_loss"], 3.5)
         self.assertAlmostEqual(aggregate["mean_reward"], 1.75)
         self.assertAlmostEqual(aggregate["predictor_loss"], 22 / 3)
+
+    def test_epoch_rl_diagnostics_use_their_native_denominators(self):
+        aggregate = _aggregate_train_metrics([
+            (2, {
+                "sampler_loss": 2.0,
+                "policy_loss": 3.0,
+                "value_loss": 4.0,
+                "mean_reward": 5.0,
+                "mean_policy_entropy": 0.4,
+                "raw_advantage_sum": 2.0,
+                "raw_advantage_sq_sum": 6.0,
+                "stop_raw_advantage_sum": 1.0,
+                "stop_action_count": 1,
+                "sampler_grad_norm": 10.0,
+                "sampler_update_count": 1,
+                "predictor_loss": 1.0,
+                "sampler_step_count": 2,
+            }),
+            (1, {
+                "sampler_loss": 6.0,
+                "policy_loss": 9.0,
+                "value_loss": 12.0,
+                "mean_reward": 15.0,
+                "mean_policy_entropy": 0.8,
+                "raw_advantage_sum": 4.0,
+                "raw_advantage_sq_sum": 16.0,
+                "stop_raw_advantage_sum": 0.0,
+                "stop_action_count": 0,
+                "sampler_grad_norm": 4.0,
+                "sampler_update_count": 1,
+                "predictor_loss": 1.0,
+                "sampler_step_count": 1,
+            }),
+        ])
+
+        self.assertAlmostEqual(aggregate["policy_loss"], 5.0)
+        self.assertAlmostEqual(aggregate["value_loss"], 20 / 3)
+        self.assertAlmostEqual(aggregate["mean_policy_entropy"], 8 / 15)
+        self.assertAlmostEqual(aggregate["mean_raw_advantage"], 2.0)
+        self.assertAlmostEqual(aggregate["std_raw_advantage"], (10 / 3) ** 0.5)
+        self.assertEqual(aggregate["mean_stop_raw_advantage"], 1.0)
+        self.assertEqual(aggregate["stop_action_count"], 1)
+        self.assertEqual(aggregate["mean_sampler_grad_norm"], 7.0)
 
     def test_no_action_batch_does_not_enter_sampler_denominator(self):
         aggregate = _aggregate_train_metrics([

@@ -53,6 +53,7 @@ class SamplingStep:
     log_prob: torch.Tensor
     value: torch.Tensor
     is_stop: bool = False
+    entropy: torch.Tensor | None = None
 
 
 @dataclass
@@ -205,6 +206,7 @@ class SubgraphSampler(nn.Module):
             stop_logit = self.stop_head(state_repr[:1]).squeeze()
             logits = torch.cat((scores, stop_logit.reshape(1)))
             probs = torch.softmax(logits, dim=0)
+            entropy = -(probs * F.log_softmax(logits, dim=0)).sum()
             if training:
                 choice = torch.distributions.Categorical(probs).sample()
                 log_prob = torch.log(probs[choice])
@@ -217,7 +219,9 @@ class SubgraphSampler(nn.Module):
                 graph = self._make_graph(
                     selected, graph_edges, target_local, node_index, proxy_nodes
                 )
-                steps.append(SamplingStep(graph, log_prob, value, is_stop=True))
+                steps.append(SamplingStep(
+                    graph, log_prob, value, is_stop=True, entropy=entropy
+                ))
                 return SamplingTrajectory(
                     baseline_graph, steps, tuple(sorted(proxy_nodes)), stopped=True
                 )
@@ -232,7 +236,7 @@ class SubgraphSampler(nn.Module):
             graph = self._make_graph(
                 selected, graph_edges, target_local, node_index, proxy_nodes
             )
-            steps.append(SamplingStep(graph, log_prob, value))
+            steps.append(SamplingStep(graph, log_prob, value, entropy=entropy))
 
         return SamplingTrajectory(
             baseline_graph, steps, tuple(sorted(proxy_nodes)), stopped=False

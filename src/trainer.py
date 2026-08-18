@@ -73,6 +73,17 @@ class AlternatingTrainer:
                 "baseline_loss": baseline_losses.mean().detach(),
                 "mean_reward": zero,
                 "sampler_step_count": 0,
+                "mean_raw_advantage": zero,
+                "std_raw_advantage": zero,
+                "raw_advantage_sum": zero,
+                "raw_advantage_sq_sum": zero,
+                "mean_stop_raw_advantage": None,
+                "stop_raw_advantage_sum": zero,
+                "stop_action_count": 0,
+                "mean_policy_entropy": zero,
+                "policy_entropy_sum": zero,
+                "sampler_grad_norm": zero,
+                "sampler_update_count": 0,
                 **self._trajectory_diagnostics(trajectories, baseline_losses.mean(),
                                                baseline_losses.mean(), zero),
             }
@@ -107,23 +118,40 @@ class AlternatingTrainer:
             self._return_to_go(rewards, self.reinforce_gamma)
             for rewards in rewards_by_trajectory
         ]
-        policy_losses = []
+        raw_advantages = []
         value_losses = []
         rewards = []
         for sample_index, trajectory in enumerate(trajectories):
             for step_index, step in enumerate(trajectory.steps):
                 reward = rewards_by_trajectory[sample_index][step_index]
                 return_to_go = returns_by_trajectory[sample_index][step_index]
-                advantage = (return_to_go - step.value).detach()
                 rewards.append(reward)
-                policy_losses.append(-step.log_prob * advantage)
+                raw_advantages.append((return_to_go - step.value).detach())
                 value_losses.append(F.mse_loss(step.value, return_to_go))
 
+        raw_advantages = torch.stack(raw_advantages)
+        advantages = self._normalize_advantages(raw_advantages)
+        policy_losses = [
+            -step.log_prob * advantage
+            for (_, step), advantage in zip(step_records, advantages)
+        ]
+        entropy_values = torch.stack([
+            step.entropy.detach() if step.entropy is not None
+            else raw_advantages.new_zeros(())
+            for _, step in step_records
+        ])
+        stop_mask = torch.tensor(
+            [step.is_stop for _, step in step_records],
+            device=raw_advantages.device,
+            dtype=torch.bool,
+        )
+        stop_advantages = raw_advantages[stop_mask]
         policy_loss = torch.stack(policy_losses).mean()
         value_loss = torch.stack(value_losses).mean()
         loss = policy_loss + self.reinforce_baseline_coef * value_loss
         self.sampler_optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        sampler_grad_norm = self._grad_norm(self.sampler, loss)
         self.sampler_optimizer.step()
         self._restore_requires_grad(self.sampler, sampler_requires_grad)
         self._restore_requires_grad(self.predictor, predictor_requires_grad)
@@ -143,6 +171,19 @@ class AlternatingTrainer:
             "baseline_loss": baseline_losses.mean().detach(),
             "mean_reward": torch.stack(rewards).mean(),
             "sampler_step_count": len(step_records),
+            "mean_raw_advantage": raw_advantages.mean(),
+            "std_raw_advantage": raw_advantages.std(unbiased=False),
+            "raw_advantage_sum": raw_advantages.sum(),
+            "raw_advantage_sq_sum": raw_advantages.square().sum(),
+            "mean_stop_raw_advantage": (
+                stop_advantages.mean() if stop_advantages.numel() else None
+            ),
+            "stop_raw_advantage_sum": stop_advantages.sum(),
+            "stop_action_count": int(stop_advantages.numel()),
+            "mean_policy_entropy": entropy_values.mean(),
+            "policy_entropy_sum": entropy_values.sum(),
+            "sampler_grad_norm": sampler_grad_norm,
+            "sampler_update_count": 1,
             **self._trajectory_diagnostics(
                 trajectories, baseline_losses.mean(), final_loss,
                 torch.stack(rewards).gt(0).float().mean(),
@@ -275,6 +316,27 @@ class AlternatingTrainer:
             running = rewards[index] + gamma * running
             returns[index] = running
         return returns
+
+    @staticmethod
+    def _normalize_advantages(advantages, eps=1e-8):
+        """Standardize detached advantages across all action steps in a batch."""
+        if advantages.numel() == 0:
+            return advantages
+        return (advantages - advantages.mean()) / advantages.std(
+            unbiased=False
+        ).clamp_min(eps)
+
+    @staticmethod
+    def _grad_norm(module, reference):
+        """Return the total L2 norm of parameter gradients without clipping."""
+        squared_norms = [
+            parameter.grad.detach().square().sum()
+            for parameter in module.parameters()
+            if parameter.grad is not None
+        ]
+        if not squared_norms:
+            return reference.new_zeros(())
+        return torch.stack(squared_norms).sum().sqrt().detach()
 
     @staticmethod
     def _trajectory_rewards(trajectory, baseline_loss, step_losses,

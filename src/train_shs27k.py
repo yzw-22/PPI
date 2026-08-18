@@ -9,6 +9,7 @@ assumed to exist under ``--root`` and are not pre-checked.
 import argparse
 import copy
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -119,9 +120,19 @@ def _aggregate_train_metrics(batch_records):
     steps, so every action receives equal weight here.  Predictor loss is a
     mean over PPI samples and remains sample-weighted.
     """
-    sampler_loss_total = 0.0
-    reward_total = 0.0
+    step_metric_totals = {
+        key: 0.0 for key in (
+            "sampler_loss", "policy_loss", "value_loss", "mean_reward",
+            "mean_policy_entropy",
+        )
+    }
     sampler_step_count = 0
+    raw_advantage_sum = 0.0
+    raw_advantage_sq_sum = 0.0
+    stop_raw_advantage_sum = 0.0
+    stop_action_count = 0
+    sampler_grad_norm_total = 0.0
+    sampler_update_count = 0
     predictor_loss_total = 0.0
     sample_count = 0
     diagnostic_totals = {
@@ -134,9 +145,18 @@ def _aggregate_train_metrics(batch_records):
     reward_positive_total = 0.0
     for batch_size, metrics in batch_records:
         steps = int(metrics["sampler_step_count"])
-        sampler_loss_total += float(metrics["sampler_loss"]) * steps
-        reward_total += float(metrics["mean_reward"]) * steps
+        for key in step_metric_totals:
+            step_metric_totals[key] += float(metrics.get(key, 0.0)) * steps
         sampler_step_count += steps
+        raw_advantage_sum += float(metrics.get("raw_advantage_sum", 0.0))
+        raw_advantage_sq_sum += float(metrics.get("raw_advantage_sq_sum", 0.0))
+        stop_raw_advantage_sum += float(
+            metrics.get("stop_raw_advantage_sum", 0.0)
+        )
+        stop_action_count += int(metrics.get("stop_action_count", 0))
+        updates = int(metrics.get("sampler_update_count", 0))
+        sampler_grad_norm_total += float(metrics.get("sampler_grad_norm", 0.0)) * updates
+        sampler_update_count += updates
 
         sampler_size = int(batch_size)
         predictor_loss_total += float(metrics["predictor_loss"]) * sampler_size
@@ -146,19 +166,36 @@ def _aggregate_train_metrics(batch_records):
         reward_positive_total += float(metrics.get("reward_positive_rate", 0.0)) * sampler_size
 
     result = {
-        "sampler_loss": (
-            sampler_loss_total / sampler_step_count
-            if sampler_step_count else 0.0
+        key: total / sampler_step_count if sampler_step_count else 0.0
+        for key, total in step_metric_totals.items()
+    }
+    raw_advantage_mean = (
+        raw_advantage_sum / sampler_step_count if sampler_step_count else 0.0
+    )
+    raw_advantage_variance = (
+        raw_advantage_sq_sum / sampler_step_count - raw_advantage_mean ** 2
+        if sampler_step_count else 0.0
+    )
+    result.update({
+        "mean_raw_advantage": raw_advantage_mean,
+        "std_raw_advantage": math.sqrt(max(0.0, raw_advantage_variance)),
+        "mean_stop_raw_advantage": (
+            stop_raw_advantage_sum / stop_action_count
+            if stop_action_count else None
         ),
+        "stop_action_count": stop_action_count,
+        "mean_sampler_grad_norm": (
+            sampler_grad_norm_total / sampler_update_count
+            if sampler_update_count else 0.0
+        ),
+        "sampler_update_count": sampler_update_count,
+    })
+    result.update({
         "predictor_loss": (
             predictor_loss_total / sample_count
             if sample_count else 0.0
         ),
-        "mean_reward": (
-            reward_total / sampler_step_count
-            if sampler_step_count else 0.0
-        ),
-    }
+    })
     result.update({
         key: value / sample_count if sample_count else 0.0
         for key, value in diagnostic_totals.items()
