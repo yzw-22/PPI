@@ -176,7 +176,7 @@ def run(args):
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
         max_steps=args.max_steps,
-        fixed_num=args.fixed_num,
+        k_hops=args.k_hops,
     ).to(device)
     predictor = PPIPredictor(
         esm_dim=esm_dim,
@@ -342,7 +342,10 @@ def parse_args():
     parser.add_argument("--eval-batch-size", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=10)
-    parser.add_argument("--fixed-num", type=int, default=1)
+    parser.add_argument(
+        "--k-hops", type=int, default=1,
+        help="maximum safe-adjacency distance from G0 seeds for sampler actions",
+    )
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -358,6 +361,8 @@ def parse_args():
             f"{args.dataset!r}; expected one of "
             f"{PPIGraph.AVAILABLE_SPLITS[args.dataset]}"
         )
+    if args.k_hops < 0:
+        parser.error("k-hops must be non-negative")
     return args
 
 

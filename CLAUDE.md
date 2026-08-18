@@ -23,10 +23,9 @@
 ## 当前 Sampler 设计
 
 - 只有安全邻接为空的目标才选择虚拟 proxy；proxy 从当前 split 的非目标节点中按 ESM embedding 余弦相似度选择，两个目标可以共享 proxy。
-- `baseline_graph` 是唯一初始图 `G_0`。对 `u`、`v` 和实际存在的 proxy，分别从各自 split 内安全一跳邻居中最多采样 `fixed_num` 个节点；默认 `fixed_num=1`。
-- 一跳采样使用独立固定 seed `42`，重复节点合并去重，因此同一输入的 `G_0` 可复现。
-- `G_0` 保留所有已选节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
-- 后续动作候选是当前 frontier，不使用 hop 限制；动作最多执行 `max_steps` 次，默认 `max_steps=10`，当前没有 STOP 动作或双目标平衡约束。
+- `baseline_graph` 是唯一初始图 `G_0`，只包含 `u`、`v` 和必要的虚拟 proxy；安全一跳邻居不预先采样。
+- `G_0` 保留初始节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
+- 后续动作候选是当前 frontier，但只保留距 `G_0` 种子（`u`、`v`、proxy）不超过 `k_hops` 的安全节点；默认 `k_hops=1`。`max_steps` 只限制动作次数（默认 `10`），当前没有 STOP 动作或双目标平衡约束。
 - 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用贪心动作。
 - 动作 score 使用独立的 state/candidate 投影和 pairwise MLP：
   `Linear(2*hidden_dim→action_hidden) → LeakyReLU → Linear(action_hidden→1)`。
@@ -36,13 +35,22 @@
 每条轨迹的奖励和 return-to-go 为：
 
 \[
-r_t=L_{G_0}-L_t, \qquad G_t=r_t+\gamma G_{t+1}
+r_t=L_{t-1}-L_t, \qquad G_t=r_t+\gamma G_{t+1}
 \]
+
+其中第一步的 \(L_{t-1}\) 是初始图 \(G_0\) 的 loss；不包含子图大小或
+\(\Delta n\) 惩罚。
 
 Sampler 更新为：
 
 \[
-L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(G_t-V(s_t))
+\hat A_t=\frac{A_t-\operatorname{mean}_{\mathrm{batch}}(A)}
+{\max(\operatorname{std}_{\mathrm{batch}}(A),10^{-8})},
+\qquad A_t=G_t-V(s_t)
+\]
+
+\[
+L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t)
 \]
 
 \[
@@ -50,7 +58,7 @@ L_{value}=\operatorname{MSE}(V(s_t),G_t), \qquad
 L_{sampler}=L_{policy}+\beta L_{value}
 \]
 
-- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算奖励。
+- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算增量奖励；同一 batch 的全部动作 step 对 detached advantage 做标准化，value loss 保持拟合原始 return-to-go。
 - Predictor 更新时 Sampler 冻结，只使用每条贪心轨迹的 `final_graph`；无动作时 `final_graph` 就是 `G_0`。
 - F1 使用固定阈值 `0.5`。
 - 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态，训练结束后仅在最佳状态上测试一次。
@@ -65,7 +73,7 @@ python -m src.train_shs27k \
   --device cuda \
   --epochs 10 \
   --hidden-dim 256 \
-  --fixed-num 1 \
+  --k-hops 1 \
   --max-steps 10 \
   --reinforce-gamma 0.9
 ```
@@ -74,7 +82,7 @@ python -m src.train_shs27k \
 
 ## 性能优化方向
 
-详见 [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md)。当前优先级为：缓存 `G_0` 和投影结果、增量维护状态、减少 adjacency 复制和 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier。
+详见 [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md)。当前优先级为：缓存投影结果、增量维护状态和减少 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier。
 
 ## 验证
 

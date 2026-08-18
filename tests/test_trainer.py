@@ -27,6 +27,33 @@ class ReturnToGoTest(unittest.TestCase):
         self.assertEqual(AlternatingTrainer._return_to_go([], gamma=1.0), [])
 
 
+class RewardAndAdvantageTest(unittest.TestCase):
+    def test_rewards_compare_each_step_with_the_previous_graph(self):
+        rewards = AlternatingTrainer._trajectory_rewards(
+            torch.tensor(1.0),
+            torch.tensor([0.8, 0.9, 0.6]),
+        )
+
+        for reward, expected in zip(rewards, [0.2, -0.1, 0.3]):
+            self.assertAlmostEqual(float(reward), expected, places=6)
+
+    def test_batch_advantages_are_standardized_with_population_std(self):
+        normalized = AlternatingTrainer._normalize_advantages(
+            torch.tensor([1.0, 3.0, 5.0])
+        )
+
+        self.assertAlmostEqual(float(normalized.mean()), 0.0, places=6)
+        self.assertAlmostEqual(float(normalized.std(unbiased=False)), 1.0, places=6)
+
+    def test_constant_batch_advantages_remain_finite(self):
+        normalized = AlternatingTrainer._normalize_advantages(
+            torch.tensor([2.0, 2.0])
+        )
+
+        self.assertTrue(torch.isfinite(normalized).all())
+        self.assertTrue(torch.equal(normalized, torch.zeros_like(normalized)))
+
+
 class _RecordingSampler(nn.Module):
     def __init__(self, trajectory):
         super().__init__()

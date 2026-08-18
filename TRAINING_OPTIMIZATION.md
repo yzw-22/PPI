@@ -4,6 +4,21 @@
 
 训练时间主要来自 Sampler 轨迹生成、Sampler 更新阶段对多个 step graph 的 Predictor 前向计算，以及验证集推理；`reinforce_gamma` 本身不会显著影响运行时间。
 
+## 训练稳定性约束
+
+Sampler 的普通动作奖励使用相邻子图的 Predictor loss 改善：
+
+\[
+r_t=L(G_{t-1})-L(G_t)
+\]
+
+第一步中的 \(G_{t-1}\) 是 \(G_0\)。当前实现不对新增节点数或子图大小施加
+惩罚。每个 sampler batch 汇总全部动作的 detached advantage
+\(A_t=G_t-V(s_t)\)，并按 batch 均值和总体标准差标准化后计算 policy loss；
+value loss 仍使用未标准化的 return-to-go。该机制用于降低 REINFORCE 更新方差，
+不是运行时加速。categorical/log-prob、return-to-go、advantage 和 value loss 保持
+FP32。
+
 ## 主要瓶颈
 
 ### 1. Sampler 更新和 Predictor 更新重复计算
@@ -25,20 +40,23 @@
 - `_nearest_proxy()` 每次都重新归一化整个节点 embedding 矩阵并扫描余弦相似度；
 - 同一个 PPI 的 `G_0` 在 Sampler 更新、Predictor 更新、验证和测试中重复构造。
 
-### 5. 每个 target 的邻接表复制
+### 5. 每个 target 的邻接表复制（已消除）
 
-共享邻接表在每个 target 中通过 `list(adjacency)` 创建浅层列表，并修改两个目标节点的邻接集合。SHS27k 影响有限，但在 STRING 上会产生明显的 O(N) 额外开销。
+共享邻接表通过只覆盖两个目标节点的只读 view 排除目标边，不复制完整
+`adjacency` 列表。k-hop 可达区域在每条 trajectory 初始化时做一次局部 BFS，
+action step 仅增量维护受限 frontier；不能在每步重复 BFS，也不应为全数据集
+target 建立无界区域缓存。SHS27k 影响有限，但在 STRING 上可避免明显的 O(N)
+邻接复制和不可控缓存占用。
 
 ## 优先级方案
 
 | 优先级 | 方案 | 预期收益 | 风险 |
 |---|---|---:|---:|
 | 已完成 | 训练期间取消逐 epoch 测试，训练结束只测试最佳 checkpoint | 很高 | 很低 |
-| P0 | 缓存每个 split 的 `G_0` | 中等 | 很低 |
 | P1 | 缓存 split-level 归一化 embedding 和 candidate projection | 高 | 低 |
 | P1 | 增量维护 selected embedding sum/count | 中等 | 低 |
-| P1 | 消除每个 target 的完整 adjacency list 复制 | STRING 上中等到高 | 中 |
 | P1 | 减少或合并 Predictor 的重复 forward | 很高 | 中 |
+| 已完成 | 使用目标边懒惰屏蔽 view，并在每条 trajectory 只构造一次 k-hop 区域 | STRING 上中等到高 | 低 |
 | P2 | 评估阶段使用 `torch.inference_mode()` | 中等 | 很低 |
 | P2 | 增大 train/eval batch size | 中等 | 中 |
 | P2 | Predictor 尝试 BF16/AMP | 中等到高 | 中 |
@@ -50,14 +68,13 @@
 
 1. 已完成：训练过程中只评估验证集；根据验证 Macro-AUC 保存最佳状态，训练结束后只测试一次。
 2. 验证和测试使用 `torch.inference_mode()`。
-3. 按 split 和 target 缓存 `G_0` 的节点、边和 proxy 结果。
-4. 缓存 split-level 归一化 embedding。
-5. 在一次 Sampler trajectory 内预先计算 `neighbor_proj(node_features)`，每步只索引候选节点。
-6. 用 `state_sum / state_count` 增量维护状态均值。
+3. 缓存 split-level 归一化 embedding。
+4. 在一次 Sampler trajectory 内预先计算 `neighbor_proj(node_features)`，每步只索引候选节点。
+5. 用 `state_sum / state_count` 增量维护状态均值。
 
 ### 第二阶段：Sampler 图操作
 
-1. 用共享 adjacency 加目标边排除上下文替代 `list(adjacency)`。
+1. 已完成：用共享 adjacency 的目标边懒惰屏蔽 view 替代 `list(adjacency)`，并仅在 trajectory 初始化时构造 k-hop 区域。
 2. 减少动态 tensor 构造和 Python 字典/边列表构造。
 3. 避免 `int(action)` 导致的 GPU 同步。
 4. 缓存或批量构造 graph index。
@@ -66,7 +83,7 @@
 
 1. 在显存允许范围内测试 train batch size `32/64/128` 和 eval batch size `64/128/256`。
 2. 优先对 Predictor GAT 使用 BF16 autocast。
-3. 保持 categorical/log-prob、return-to-go、advantage 和 value loss 使用 FP32；再单独评估 Sampler projection/MLP 是否适合 BF16。
+3. 保持 categorical/log-prob、return-to-go、标准化 advantage 和 value loss 使用 FP32；再单独评估 Sampler projection/MLP 是否适合 BF16。
 4. 比较速度、显存、NaN 情况、reward 和验证性能。
 
 ### 第四阶段：STRING 扩展
@@ -95,8 +112,8 @@ CUDA 是异步执行的，测量 GPU 时间前应调用 `torch.cuda.synchronize(
 
 - 所有节点、代理和边都来自当前 train/val/test split；
 - 目标边始终从安全邻接、`G_0` 和 step graph 中移除；
-- `G_0` 继续使用固定 seed=42，分别对 `u/v/proxy` 的安全一跳邻居采样；
+- `G_0` 只包含 `u/v/proxy`；candidate 节点始终位于从这些种子计算的一次性安全 `k_hops` 区域内；
 - `G_0` 保留选中节点之间的全部安全诱导边；
 - Predictor 训练和评估继续使用 `final_graph`；
-- REINFORCE return-to-go 公式不变；
+- REINFORCE 使用相邻图的增量奖励，return-to-go 继续按既定的 `gamma` 从后向前计算；
 - F1 阈值固定为 0.5。

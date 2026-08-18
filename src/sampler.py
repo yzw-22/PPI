@@ -11,6 +11,31 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class _TargetSafeAdjacency:
+    """Read-only adjacency view with one target edge removed.
+
+    The split-level adjacency remains shared. Only the two target rows are
+    materialized once, avoiding an O(N) list copy for every trajectory.
+    """
+
+    def __init__(self, base, source, target):
+        self.base = base
+        self.source = int(source)
+        self.target = int(target)
+        self.source_neighbors = base[self.source] - {self.target}
+        self.target_neighbors = base[self.target] - {self.source}
+
+    def __len__(self):
+        return len(self.base)
+
+    def __getitem__(self, index):
+        if index == self.source:
+            return self.source_neighbors
+        if index == self.target:
+            return self.target_neighbors
+        return self.base[index]
+
+
 @dataclass
 class SampledGraph:
     """A sampled subgraph in the coordinate system of ``node_features``."""
@@ -52,23 +77,22 @@ class SubgraphSampler(nn.Module):
     ``node_index`` maps rows in ``node_features`` to global protein indices;
     when omitted, rows are treated as global indices.
 
-    ``fixed_num`` limits the number of deterministic, seed-42 sampled
-    one-hop context nodes selected independently for each initial seed in
-    ``{u, v, proxy}``.
+    The baseline graph contains only the target pair and any required virtual
+    proxy. Candidate expansions are restricted to their safe ``k_hops``
+    neighborhood.
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 fixed_num=1):
+                 k_hops=1):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
-        if fixed_num < 0:
-            raise ValueError("fixed_num must be non-negative")
+        if k_hops < 0:
+            raise ValueError("k_hops must be non-negative")
 
         self.esm_dim = esm_dim
-        self.hidden_dim = hidden_dim
         self.max_steps = max_steps
-        self.fixed_num = fixed_num
+        self.k_hops = k_hops
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.  The first MLP layer receives the
         # concatenated pair, so it can mix state and candidate features.
@@ -114,18 +138,9 @@ class SubgraphSampler(nn.Module):
         node_features, edge_index, node_index, target_local = self._prepare_inputs(
             node_features, edge_index, target_nodes, node_index
         )
-        if adjacency is None:
-            safe_edges = self._remove_target_edges(edge_index, target_local)
-            adjacency = self._build_adjacency(safe_edges, node_features.shape[0])
-        else:
-            # ``adjacency`` is a shared immutable split-level structure; exclude
-            # the target edge lazily instead of deep-copying every neighbor set
-            # (O(E) per target).  Only the two target rows change, so patch the
-            # shallow list copy in place.
-            u, v = target_local.tolist()
-            adjacency = list(adjacency)
-            adjacency[u] = adjacency[u] - {v}
-            adjacency[v] = adjacency[v] - {u}
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
 
         u, v = target_local.tolist()
         selected = [u, v]
@@ -133,23 +148,24 @@ class SubgraphSampler(nn.Module):
         self._add_virtual_proxies(
             selected, graph_edges, adjacency, node_features, target_local
         )
-        selected.extend(self._sample_initial_neighbors(selected, adjacency))
-        # G0 is the sole baseline: include every safe split-local edge induced
-        # by its nodes, in addition to any virtual proxy edges.
+        # G0 is the sole baseline: it contains only targets and any virtual
+        # proxies. Safe one-hop neighbors are introduced by frontier actions.
         self._add_real_edges(selected, graph_edges, adjacency)
         baseline_graph = self._make_graph(
             selected, graph_edges, target_local, node_index
         )
         steps = []
+        allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
 
-        # The frontier is maintained incrementally instead of being rebuilt
-        # from every selected node each step: seed it with the initially
-        # selected nodes' neighbors (including any proxy), then each step only
-        # add the newly chosen node's neighbors.
+        # ``allowed_nodes`` is computed once per trajectory. The frontier is
+        # then maintained incrementally without repeating the k-hop traversal.
         selected_set = set(selected)
-        frontier = set()
-        for node in selected:
-            frontier.update(adjacency[node])
+        frontier = {
+            neighbor
+            for node in selected
+            for neighbor in adjacency[node]
+            if neighbor in allowed_nodes
+        }
         frontier.difference_update(selected_set)
 
         for _ in range(self.max_steps):
@@ -186,7 +202,10 @@ class SubgraphSampler(nn.Module):
             selected.append(action_int)
             selected_set.add(action_int)
             frontier.discard(action_int)
-            frontier.update(adjacency[action_int])
+            frontier.update(
+                neighbor for neighbor in adjacency[action_int]
+                if neighbor in allowed_nodes
+            )
             frontier.difference_update(selected_set)
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
             steps.append(SamplingStep(graph, log_prob, value))
@@ -228,6 +247,13 @@ class SubgraphSampler(nn.Module):
             raise ValueError("target_nodes must be present in node_index")
         return node_features, edge_index.to(device=node_features.device), node_index, target_local
 
+    def _prepare_adjacency(self, edge_index, target_local, num_nodes, adjacency):
+        if adjacency is None:
+            safe_edges = self._remove_target_edges(edge_index, target_local)
+            return self._build_adjacency(safe_edges, num_nodes)
+        u, v = target_local.tolist()
+        return _TargetSafeAdjacency(adjacency, u, v)
+
     @staticmethod
     def _remove_target_edges(edge_index, target_nodes):
         u, v = target_nodes.tolist()
@@ -252,27 +278,25 @@ class SubgraphSampler(nn.Module):
                 adjacency[target].add(source)
         return tuple(frozenset(neighbors) for neighbors in adjacency)
 
-    def _sample_initial_neighbors(self, seed_nodes, adjacency):
-        """Sample at most ``fixed_num`` neighbors independently per seed.
+    @staticmethod
+    def _k_hop_region(seed_nodes, adjacency, k_hops):
+        """Return nodes within ``k_hops`` of the G0 seeds in safe adjacency.
 
-        A private generator seeded with 42 makes G0 reproducible without
-        resetting the global RNG used for RL action sampling.
+        This local BFS runs once when a trajectory starts; action steps only
+        maintain a frontier within the returned set.
         """
-        generator = torch.Generator(device="cpu").manual_seed(42)
-        initial_set = set(seed_nodes)
-        sampled = set()
-        for seed in seed_nodes:
-            candidates = sorted(
-                neighbor for neighbor in adjacency[seed]
-                if neighbor not in initial_set
-            )
-            if len(candidates) > self.fixed_num:
-                positions = torch.randperm(
-                    len(candidates), generator=generator
-                )[:self.fixed_num].tolist()
-                candidates = [candidates[position] for position in positions]
-            sampled.update(candidates)
-        return sorted(sampled)
+        allowed = set(seed_nodes)
+        current_ring = set(seed_nodes)
+        for _ in range(k_hops):
+            next_ring = set()
+            for node in current_ring:
+                next_ring.update(adjacency[node])
+            next_ring.difference_update(allowed)
+            if not next_ring:
+                break
+            allowed.update(next_ring)
+            current_ring = next_ring
+        return allowed
 
     @staticmethod
     def _add_action_edges(action, selected, graph_edges, adjacency):

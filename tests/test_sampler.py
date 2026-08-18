@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from src.sampler import SubgraphSampler
+from src.sampler import _TargetSafeAdjacency, SubgraphSampler
 
 
 def global_edges(graph):
@@ -35,7 +35,12 @@ class SubgraphSamplerTest(unittest.TestCase):
 
         self.assertEqual(sampler.action_mlp[0].in_features, 8)
         self.assertEqual(sampler.action_mlp[-1].out_features, 1)
-        self.assertEqual(sampler.fixed_num, 1)
+        self.assertFalse(hasattr(sampler, "fixed_num"))
+        self.assertEqual(sampler.k_hops, 1)
+
+    def test_negative_k_hops_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "k_hops"):
+            SubgraphSampler(esm_dim=2, k_hops=-1)
 
     def test_node_index_must_be_strictly_increasing(self):
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=2, max_steps=0)
@@ -50,15 +55,16 @@ class SubgraphSamplerTest(unittest.TestCase):
             )
 
     def test_baseline_graph_contains_induced_real_edges(self):
-        # Target edge 0-1 is removed; 1-2 remains a real safe edge.
+        # Target edge 0-1 is removed; safe edge 1-2 remains available to the
+        # frontier but is not included in G0.
         node_features = torch.tensor([
             [1.0, 0.0],
             [0.0, 1.0],
             [1.0, 0.0],
         ])
         edge_index = torch.tensor([
-            [0, 1, 1],
-            [1, 0, 2],
+            [0, 1, 1, 0],
+            [1, 0, 2, 2],
         ])
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=2, max_steps=0)
 
@@ -66,8 +72,8 @@ class SubgraphSamplerTest(unittest.TestCase):
             node_features, edge_index, torch.tensor([0, 1]), training=False
         )
 
-        self.assertEqual(set(trajectory.baseline_graph.node_index.tolist()), {0, 1, 2})
-        self.assertEqual(global_edges(trajectory.baseline_graph), {(0, 2), (1, 2)})
+        self.assertEqual(set(trajectory.baseline_graph.node_index.tolist()), {0, 1})
+        self.assertEqual(global_edges(trajectory.baseline_graph), set())
         self.assertNotIn((0, 1), global_edges(trajectory.baseline_graph))
 
     def test_isolated_targets_can_share_one_proxy_without_duplicates(self):
@@ -91,58 +97,107 @@ class SubgraphSamplerTest(unittest.TestCase):
         self.assertNotIn(1, trajectory.baseline_graph.node_index[2:].tolist())
         self.assertNotIn((0, 1), global_edges(trajectory.baseline_graph))
 
-    def test_baseline_graph_caps_one_hop_context_and_is_reproducible(self):
+    def test_baseline_graph_excludes_initial_neighbors_but_frontier_expands(self):
         node_features = torch.eye(6, dtype=torch.float32)
         edge_index = torch.tensor([
             [0, 1, 0, 0, 1, 2, 2, 3, 3, 4, 4, 5],
             [1, 0, 2, 3, 3, 1, 3, 0, 2, 5, 3, 4],
         ])
-        sampler = SubgraphSampler(
-            esm_dim=6, hidden_dim=2, max_steps=0, fixed_num=2
-        )
+        sampler = SubgraphSampler(esm_dim=6, hidden_dim=2, max_steps=0)
 
         first = sampler.sample(
             node_features, edge_index, torch.tensor([0, 1]), training=False
         )
-        second = sampler.sample(
-            node_features, edge_index, torch.tensor([0, 1]), training=False
-        )
-
-        self.assertEqual(
-            first.baseline_graph.node_index.tolist(),
-            second.baseline_graph.node_index.tolist(),
-        )
-        self.assertLessEqual(
-            len(first.baseline_graph.node_index), 2 + 2 * sampler.fixed_num
-        )
+        self.assertEqual(first.baseline_graph.node_index.tolist(), [0, 1])
         self.assertNotIn((0, 1), global_edges(first.baseline_graph))
 
-        initial_nodes = {0, 1}
-        baseline_nodes = set(first.baseline_graph.node_index.tolist())
-        for seed in initial_nodes:
-            sampled_from_seed = baseline_nodes.intersection(
-                set(SubgraphSampler._build_adjacency(edge_index, 6)[seed])
-            ) - initial_nodes
-            self.assertLessEqual(len(sampled_from_seed), sampler.fixed_num)
+        sampler.max_steps = 1
+        expanded = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+        self.assertEqual(len(expanded.steps), 1)
+        self.assertEqual(len(expanded.final_graph.node_index), 3)
+        self.assertTrue(
+            set(expanded.final_graph.node_index.tolist()).intersection({2, 3})
+        )
 
-    def test_baseline_graph_contains_all_induced_safe_edges(self):
+    def test_k_hop_region_and_trajectory_limit(self):
+        # Target edge 0-1 is removed. Nodes 2, 3, and 4 are respectively one,
+        # two, and three safe hops away from the G0 target pair.
+        node_features = torch.eye(5, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 1, 2, 3],
+            [1, 0, 2, 2, 3, 4],
+        ])
+        adjacency = SubgraphSampler._build_adjacency(edge_index, 5)
+        self.assertEqual(
+            SubgraphSampler._k_hop_region([0, 1], adjacency, 0), {0, 1}
+        )
+        self.assertEqual(
+            SubgraphSampler._k_hop_region([0, 1], adjacency, 1), {0, 1, 2}
+        )
+        self.assertEqual(
+            SubgraphSampler._k_hop_region([0, 1], adjacency, 2), {0, 1, 2, 3}
+        )
+
+        for k_hops, expected_nodes in ((0, {0, 1}), (1, {0, 1, 2}),
+                                       (2, {0, 1, 2, 3})):
+            sampler = SubgraphSampler(
+                esm_dim=5, hidden_dim=2, max_steps=10, k_hops=k_hops
+            )
+            trajectory = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            )
+            self.assertEqual(
+                set(trajectory.final_graph.node_index.tolist()), expected_nodes
+            )
+            self.assertNotIn((0, 1), global_edges(trajectory.final_graph))
+
+    def test_k_hop_region_is_built_once_and_shared_adjacency_is_lazily_overlaid(self):
+        class CountingSampler(SubgraphSampler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.k_hop_region_calls = 0
+
+            def _k_hop_region(self, *args):
+                self.k_hop_region_calls += 1
+                return super()._k_hop_region(*args)
+
+        node_features = torch.eye(4, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 1, 2],
+            [1, 0, 2, 2, 3],
+        ])
+        shared = SubgraphSampler._build_adjacency(edge_index, 4)
+        sampler = CountingSampler(esm_dim=4, hidden_dim=2, max_steps=3, k_hops=2)
+        safe_adjacency = sampler._prepare_adjacency(
+            edge_index, torch.tensor([0, 1]), 4, shared
+        )
+
+        self.assertIsInstance(safe_adjacency, _TargetSafeAdjacency)
+        self.assertIs(safe_adjacency.base, shared)
+        self.assertNotIn(1, safe_adjacency[0])
+        self.assertNotIn(0, safe_adjacency[1])
+
+        sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False,
+            adjacency=shared,
+        )
+        self.assertEqual(sampler.k_hop_region_calls, 1)
+
+    def test_baseline_graph_has_no_initial_context_edges(self):
         node_features = torch.eye(4, dtype=torch.float32)
         edge_index = torch.tensor([
             [0, 1, 0, 2, 1, 2, 1, 3, 2, 3],
             [1, 0, 2, 0, 2, 1, 3, 1, 3, 2],
         ])
-        sampler = SubgraphSampler(
-            esm_dim=4, hidden_dim=2, max_steps=0, fixed_num=10
-        )
+        sampler = SubgraphSampler(esm_dim=4, hidden_dim=2, max_steps=0)
         trajectory = sampler.sample(
             node_features, edge_index, torch.tensor([0, 1]), training=False
         )
 
-        self.assertEqual(set(trajectory.baseline_graph.node_index.tolist()), {0, 1, 2, 3})
-        self.assertEqual(
-            global_edges(trajectory.baseline_graph),
-            {(0, 2), (1, 2), (1, 3), (2, 3)},
-        )
+        self.assertEqual(set(trajectory.baseline_graph.node_index.tolist()), {0, 1})
+        self.assertEqual(global_edges(trajectory.baseline_graph), set())
 
     def test_shared_adjacency_is_equivalent_to_standalone_build(self):
         # A shared immutable adjacency (with the target edge still present),

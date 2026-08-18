@@ -87,28 +87,33 @@ class AlternatingTrainer:
         rewards_by_trajectory = [[] for _ in trajectories]
         record_index = 0
         for sample_index, trajectory in enumerate(trajectories):
-            for _ in trajectory.steps:
-                rewards_by_trajectory[sample_index].append(
-                    (baseline_losses[sample_index] - step_losses[record_index]).detach()
-                )
-                record_index += 1
+            step_count = len(trajectory.steps)
+            rewards_by_trajectory[sample_index] = self._trajectory_rewards(
+                baseline_losses[sample_index],
+                step_losses[record_index:record_index + step_count],
+            )
+            record_index += step_count
 
         returns_by_trajectory = [
             self._return_to_go(rewards, self.reinforce_gamma)
             for rewards in rewards_by_trajectory
         ]
-        policy_losses = []
+        raw_advantages = []
         value_losses = []
         rewards = []
         for sample_index, trajectory in enumerate(trajectories):
             for step_index, step in enumerate(trajectory.steps):
                 reward = rewards_by_trajectory[sample_index][step_index]
                 return_to_go = returns_by_trajectory[sample_index][step_index]
-                advantage = (return_to_go - step.value).detach()
                 rewards.append(reward)
-                policy_losses.append(-step.log_prob * advantage)
+                raw_advantages.append((return_to_go - step.value).detach())
                 value_losses.append(F.mse_loss(step.value, return_to_go))
 
+        advantages = self._normalize_advantages(torch.stack(raw_advantages))
+        policy_losses = [
+            -step.log_prob * advantage
+            for (_, step), advantage in zip(step_records, advantages)
+        ]
         policy_loss = torch.stack(policy_losses).mean()
         value_loss = torch.stack(value_losses).mean()
         loss = policy_loss + self.reinforce_baseline_coef * value_loss
@@ -210,6 +215,29 @@ class AlternatingTrainer:
             running = rewards[index] + gamma * running
             returns[index] = running
         return returns
+
+    @staticmethod
+    def _trajectory_rewards(baseline_loss, step_losses):
+        """Return detached loss-improvement rewards for one trajectory.
+
+        The first action is compared with ``G0``; every later action is
+        compared only with the immediately preceding sampled graph.
+        """
+        previous_loss = baseline_loss
+        rewards = []
+        for current_loss in step_losses:
+            rewards.append((previous_loss - current_loss).detach())
+            previous_loss = current_loss
+        return rewards
+
+    @staticmethod
+    def _normalize_advantages(advantages, eps=1e-8):
+        """Standardize detached advantages across all action steps in a batch."""
+        if advantages.numel() == 0:
+            return advantages
+        return (advantages - advantages.mean()) / advantages.std(
+            unbiased=False
+        ).clamp_min(eps)
 
     @staticmethod
     def _set_requires_grad(module, value):

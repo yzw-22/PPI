@@ -21,10 +21,9 @@
 
 - `baseline_graph` 是唯一初始图 `G_0`。
 - 若目标安全邻接为空，按 embedding 余弦相似度选择 proxy。
-- 对 `u`、`v` 和实际存在的 proxy，分别从各自安全一跳邻居中最多采样 `fixed_num` 个节点，默认 `fixed_num=1`。
-- 一跳采样使用独立 seed `42`，重复节点去重。
-- `G_0` 保留已选节点之间的全部安全诱导边和虚拟 proxy 边。
-- 后续候选为当前 frontier，不使用 hop 限制；最多执行 `max_steps` 次动作，默认值为 `10`，无 STOP 动作。
+- `G_0` 只包含目标节点和必要的虚拟 proxy，不预先采样安全一跳邻居。
+- 从 `G_0` 的 target/proxy 种子沿安全 adjacency 构造一次 `k_hops` 区域，默认 `k_hops=1`；安全一跳邻居由初始 frontier 提供给后续 action。
+- 后续候选为该区域内的当前 frontier；`max_steps` 只限制动作次数，默认值为 `10`，无 STOP 动作。
 - `SamplingTrajectory.final_graph` 返回最后一步图；若没有动作则返回 `baseline_graph`。
 
 ### Action score
@@ -46,9 +45,9 @@ Sampler 更新阶段：
 
 1. 冻结 Predictor，随机生成 trajectory。
 2. 计算 `G_0` 和所有 step graph 的 Predictor BCE loss。
-3. 使用 `r_t = L_{G_0} - L_t`。
+3. 使用增量奖励 `r_t = L_{t-1} - L_t`；第一步以 `G_0` loss 为前项，不包含 `Δn` 或其他复杂度惩罚。
 4. 对每条 trajectory 从后向前计算 `G_t = r_t + gamma * G_{t+1}`。
-5. 使用 `policy_loss`、`value_loss` 和 `sampler_loss` 更新 Sampler。
+5. 汇总同一 batch 的 detached `G_t - V(s_t)`，按 batch 均值和总体标准差标准化后计算 `policy_loss`；`value_loss` 仍回归原始 `G_t`，再更新 Sampler。
 
 Predictor 更新阶段：
 
