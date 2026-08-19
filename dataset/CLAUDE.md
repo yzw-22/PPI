@@ -86,22 +86,6 @@
 - **BFS/DFS**：按图结构遍历结果划分边集合，用于评估结构偏移下的泛化能力；当前数据中测试 PPI 的两个端点不会同时出现在训练节点集合中，但可以与训练集共享一个端点，并不表示 train 与 val/test 是互不连通的分量
 - **Random**：随机打乱后按 60/20/20 划分
 
-### 6. ML-ready CSV
-
-| 文件 | 大小 |
-|------|------|
-| [SHS148k_ml.csv](SHS148k_ml.csv) | ~105 MB |
-| [STRING_ml.csv](STRING_ml.csv) | ~1.5 GB |
-| [SHS27k_ml.csv](SHS27k_ml.csv) | ~16 MB |
-
-- 列结构：`id`, `seq_a`, `seq_b`, `mode`
-- `id` 格式：`taxonomy_id.ENSEMBL_A-taxonomy_id.ENSEMBL_B`（用 `-` 分割，例如 `9606.ENSP00000000233-9606.ENSP00000263025`）
-- `seq_a` / `seq_b`：完整氨基酸序列
-- `mode`：Python 列表字符串（已聚合的多标签），如 `"['binding', 'catalysis', 'reaction']"`
-- 行数 = PPI 对数 × 2（正反向各一条）
-
----
-
 ## 三层索引映射链
 
 ```
