@@ -82,7 +82,7 @@ python -m src.train_shs27k \
 
 ## 性能优化方向
 
-详见 [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md)。当前优先级为：缓存投影结果、增量维护状态和减少 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier。
+详见 [docs/TRAINING_OPTIMIZATION.md](docs/TRAINING_OPTIMIZATION.md)。当前优先级为：缓存投影结果、增量维护状态和减少 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier。
 
 ## 验证
 
