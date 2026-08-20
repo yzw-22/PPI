@@ -59,14 +59,9 @@ Predictor 更新阶段：
 
 - 输入特征经过线性层、LayerNorm、ReLU 和 Dropout。
 - 图编码使用多层 GAT，并通过 residual/LayerNorm 稳定训练。
-- 支持三种 readout（`--readout`，默认 `v1`）：
-  - `v1`：pair 特征为 `h_u+h_v`、`|h_u-h_v|` 和子图节点均值。
-  - `attn`：pair 乘积 `m_{u,v}=h_u⊙h_v` 经 `W_Q` 投影后作为 query，对子图内非目标节点做注意力（key 为 `W_K h_i`，value 为原始 `h_i`，按图内 softmax），上下文向量 `c_{u,v}` 与 `W_Q m_{u,v}` 拼接后进 MLP。
-  - `attn2`：同 `attn` 的注意力机制，但 `m_{u,v}=concat(|h_u-h_v|, h_u+h_v, h_u⊙h_v)`（三路拼接后经 `W_Q: 3d→d` 投影）。
-  - 三种模式对端点交换均对称。
+- readout 使用 `h_u+h_v`、`|h_u-h_v|` 和子图节点均值。
 - 输出 7 维 logits；公共 `predict_proba()` 保留并执行 sigmoid。
-- 支持多图 batch；注意力在同一 batch 内按图 mask，跨图节点不参与归一化。
-- 不使用任何边标签/测试标签信息（推理特征只能来自 ESM embedding 与无标签拓扑）。
+- 支持多图 batch。
 
 ## 评估
 

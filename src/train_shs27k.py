@@ -184,7 +184,6 @@ def run(args):
         num_layers=args.gnn_layers,
         heads=args.heads,
         dropout=args.dropout,
-        readout=args.readout,
     ).to(device)
     sampler_optimizer = torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
@@ -350,13 +349,6 @@ def parse_args():
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument(
-        "--readout", choices=["v1", "attn", "attn2"], default="v1",
-        help="predictor readout: 'v1' (u+v, |u-v|, graph-mean pool), 'attn' "
-             "(m_{u,v}=h_u⊙h_v query attention over non-target nodes; MLP on "
-             "[c_{u,v}; W_Q m_{u,v}]) or 'attn2' (same attention, but "
-             "m_{u,v}=concat(|u-v|, u+v, u⊙v))",
-    )
     parser.add_argument("--sampler-lr", type=float, default=1e-4)
     parser.add_argument("--predictor-lr", type=float, default=1e-3)
     parser.add_argument("--reinforce-baseline-coef", type=float, default=0.1)
