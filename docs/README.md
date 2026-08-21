@@ -7,7 +7,7 @@
 
 | 文档 | 定位 | 精简后行数 |
 |---|---|---|
-| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除，3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、27 次运行总表、建议基线命令 | 209 |
+| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除、sampler res-score、predictor readout v1-rd 负向回退，均为 3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、30 次运行总表、建议基线命令 | 233 |
 | [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md) | 训练性能瓶颈与优化方案（由仓库根目录移入并精简） | 73 |
 | [SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（当前 k_hops 语义，gamma=1.0/10ep） | 45 |
 | [SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（旧 G0/初始邻居机制，当前 CLI 不可复现） | 39 |
@@ -31,6 +31,10 @@
   pairwise MLP，配对 diff 全正（MacF1 +0.050±0.052，3/3 正）且方差显著更小
   （MacF1 std 0.024 vs 0.075，修复 v1 的 s111 崩溃点 0.358→0.481），为当前
   代码默认架构，见 EXPERIMENT_SUMMARY.md TL;DR 第 8 条。
+- **predictor readout v1-rd（3 seed，负向已回退）**：readout 加 `u⊙v` 与
+  max-pool（打分头 5h→2h→7）配对 diff 全负（MacF1 −0.034±0.040，3/3 负，
+  s123 bestEp 19→6 早峰漂移）——小数据域增大打分头容量与 max 型池化净有害，
+  代码已回退，见 TL;DR 第 9 条。
 
 ## 精简说明
 

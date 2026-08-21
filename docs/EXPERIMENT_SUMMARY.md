@@ -47,8 +47,17 @@
    MicF1 +0.032±0.041（2/3 正，s42 微负 −0.013）；方差显著更小（MacF1 std
    0.024 vs 0.075，最差 seed s111 0.358→0.481）。结论：res-score 不劣于 v1
    且稳定性明显更好，保留为默认架构；与 h256/ms10、k2 组合未测。
+9. **predictor readout 增强 v1-rd（3 seed 配对，s42/s111/s123，ms5/h128/
+   g0.9/20ep）**：readout 加入 Hadamard 积 `h_u⊙h_v` 与子图 max-pool（打分头
+   改两段 5h→2h→7）。配对 diff 全部为负：valAUC −0.012±0.007、MacAUC
+   −0.009±0.002、MicAUC −0.017±0.005、**MacF1 −0.034±0.040（3/3 负）**、
+   MicF1 −0.024±0.041（2/3 负）；rd 3-seed MacF1 0.481±0.027 vs res-score
+   0.515±0.024。s123 恶化最重（MacF1 −0.079，bestEp 19→6 早峰漂移）。
+   结论：**负向，代码已回退**（readout 恢复 3h 直通）；小数据域下增大打分头
+   容量（h128 时参数 50k→166k，3.3×）与 max 型池化（超小图上对单点异常敏感）
+   净有害，与 h256→h128、attn 系列教训一致。
 
-## 全部运行（27 次）
+## 全部运行（30 次）
 
 | readout | seed | ep | gamma | hdim | bestEp | valMacAUC | MacAUC | MicAUC | MacF1 | MicF1 | sec |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -79,6 +88,9 @@
 | v1 (ms5) | 123 | 20 | 0.9 | 128 | 15 | 0.7632 | 0.7513 | 0.7781 | 0.5111 | 0.5422 | 1492 |
 | v1 (res-score) | 111 | 20 | 0.9 | 128 | 14 | 0.7481 | 0.7427 | 0.7558 | 0.4811 | 0.4986 | 1582 |
 | v1 (res-score) | 123 | 20 | 0.9 | 128 | 19 | 0.7695 | 0.7573 | 0.7816 | 0.5300 | 0.5655 | 1631 |
+| v1 (rd) | 42 | 20 | 0.9 | 128 | 14 | 0.7392 | 0.7421 | 0.7672 | 0.5166 | 0.5440 | 1311 |
+| v1 (rd) | 111 | 20 | 0.9 | 128 | 12 | 0.7441 | 0.7364 | 0.7438 | 0.4750 | 0.5107 | 1332 |
+| v1 (rd) | 123 | 20 | 0.9 | 128 | 6 | 0.7512 | 0.7475 | 0.7603 | 0.4506 | 0.4986 | 1290 |
 
 ## 分组均值（MacF1）
 
@@ -93,6 +105,7 @@
 | v1 value 对照（3 runs，同配置配对） | 0.4824±0.0164 |
 | v1 ms5 对照（3 runs，s42/s111/s123，ms5/h128/g0.9/20ep） | 0.4644±0.0753 |
 | v1 res-score（3 runs，同配置配对） | 0.5148±0.0238 |
+| v1 rd（3 runs，同配置配对，u⊙v+max-pool） | 0.4807±0.0272 |
 
 ## 关键实验结论
 
@@ -133,6 +146,15 @@
   崩溃点（MacF1 0.358，bestEp=2 早峰）被 res 修复为 0.481（bestEp=14）；
   res 3-seed MacF1 std 0.024 vs v1 0.075。AUC 增益较小但 3/3 正。epoch 时间
   相当（约 60-80 s）。
+- **predictor readout v1-rd**（3 seed 配对，s42/s111/s123，ms5/h128/g0.9/20ep）：
+  readout 加 `h_u⊙h_v` 与子图 max-pool，打分头改两段 5h→2h→7。配对 diff 全部
+  负向：valAUC −0.012±0.007、MacAUC −0.009±0.002、MicAUC −0.017±0.005、
+  MacF1 −0.034±0.040（3/3 负）、MicF1 −0.024±0.041（2/3 负）；3 seed MacF1
+  均值 0.481±0.027 vs res-score 0.515±0.024。s123 bestEp 19→6 早峰漂移（与
+  attn2/ms5 崩盘签名一致）。机制：`u⊙v` 与 `u+v`/`|u−v|` 高度共线（增维不增
+  信息）；打分头参数 3.3×（h128 时 50k→166k）在 train 4562 上过拟合面扩大；
+  max-pool 对 2–6 节点超小子图的单点异常敏感，且随 RL 轨迹变化放大奖励噪声。
+  代码已回退，readout 恢复 3h 直通（res-score 默认）。
 - **实现细节**：attn/attn2 的 `key_proj` 无 bias（softmax 平移不变性使共享
   key bias 梯度恒为 0）；readout 切换曾由 `--readout {v1,attn,attn2}` 控制，
   attn 机制代码已在 `8a1bc79` 回退，当前模型只有 v1 路径（predictor 与
@@ -205,5 +227,7 @@ python -m src.train_shs27k \
   恢复用 `git checkout 8a1bc79 -- src/sampler.py src/trainer.py src/train_shs27k.py tests/test_trainer.py`。
 - attn2/attn3/attn4 的 ms5 结论均仅 s42 单点；attn3 vs v1 的 MacF1 差距
   （0.487 vs 0.524）需多 seed 确认是否在方差内（重测需先恢复已回退代码）。
-- F1 固定阈值 0.5；pos_weight、阈值校准、结构特征（Adamic-Adar 等）尚未实验。
+- F1 固定阈值 0.5；pos_weight、阈值校准、结构特征（Adamic-Adar 等）尚未实验
+  （readout 加 u⊙v/max-pool 已测为负向，见 TL;DR 第 9 条——小数据域避免增大
+  打分头容量与 max 型池化）。
 - 红线：推理特征只能来自 ESM embedding 与无标签拓扑，禁止边标签/测试标签。
