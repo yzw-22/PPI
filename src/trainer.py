@@ -12,14 +12,13 @@ class AlternatingTrainer:
     """
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,
-                 reinforce_baseline_coef=0.1, reinforce_gamma=1.0):
+                 reinforce_gamma=1.0):
         if not 0.0 <= reinforce_gamma <= 1.0:
             raise ValueError("reinforce_gamma must be in [0, 1]")
         self.sampler = sampler
         self.predictor = predictor
         self.sampler_optimizer = sampler_optimizer
         self.predictor_optimizer = predictor_optimizer
-        self.reinforce_baseline_coef = reinforce_baseline_coef
         self.reinforce_gamma = reinforce_gamma
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
@@ -67,7 +66,6 @@ class AlternatingTrainer:
             return {
                 "sampler_loss": zero,
                 "policy_loss": zero,
-                "value_loss": zero,
                 "baseline_loss": baseline_losses.mean().detach(),
                 "mean_reward": zero,
                 "sampler_step_count": 0,
@@ -99,15 +97,15 @@ class AlternatingTrainer:
             for rewards in rewards_by_trajectory
         ]
         raw_advantages = []
-        value_losses = []
         rewards = []
         for sample_index, trajectory in enumerate(trajectories):
             for step_index, step in enumerate(trajectory.steps):
                 reward = rewards_by_trajectory[sample_index][step_index]
                 return_to_go = returns_by_trajectory[sample_index][step_index]
                 rewards.append(reward)
-                raw_advantages.append((return_to_go - step.value).detach())
-                value_losses.append(F.mse_loss(step.value, return_to_go))
+                # No learned baseline: the discounted return-to-go is the
+                # advantage; batch standardization below recenters it.
+                raw_advantages.append(return_to_go.detach())
 
         advantages = self._normalize_advantages(torch.stack(raw_advantages))
         policy_losses = [
@@ -115,8 +113,7 @@ class AlternatingTrainer:
             for (_, step), advantage in zip(step_records, advantages)
         ]
         policy_loss = torch.stack(policy_losses).mean()
-        value_loss = torch.stack(value_losses).mean()
-        loss = policy_loss + self.reinforce_baseline_coef * value_loss
+        loss = policy_loss
         self.sampler_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         self.sampler_optimizer.step()
@@ -125,7 +122,6 @@ class AlternatingTrainer:
         return {
             "sampler_loss": loss.detach(),
             "policy_loss": policy_loss.detach(),
-            "value_loss": value_loss.detach(),
             "baseline_loss": baseline_losses.mean().detach(),
             "mean_reward": torch.stack(rewards).mean(),
             "sampler_step_count": len(step_records),

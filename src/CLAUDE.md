@@ -47,7 +47,7 @@ Sampler 更新阶段：
 2. 计算 `G_0` 和所有 step graph 的 Predictor BCE loss。
 3. 使用增量奖励 `r_t = L_{t-1} - L_t`；第一步以 `G_0` loss 为前项，不包含 `Δn` 或其他复杂度惩罚。
 4. 对每条 trajectory 从后向前计算 `G_t = r_t + gamma * G_{t+1}`。
-5. 汇总同一 batch 的 detached `G_t - V(s_t)`，按 batch 均值和总体标准差标准化后计算 `policy_loss`；`value_loss` 仍回归原始 `G_t`，再更新 Sampler。
+5. 汇总同一 batch 的 detached `G_t`（无学习 baseline），按 batch 均值和总体标准差标准化后计算 `policy_loss`，再更新 Sampler。
 
 Predictor 更新阶段：
 

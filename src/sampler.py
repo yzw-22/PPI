@@ -52,7 +52,6 @@ class SamplingStep:
 
     graph: SampledGraph
     log_prob: torch.Tensor
-    value: torch.Tensor
 
 
 @dataclass
@@ -108,11 +107,6 @@ class SubgraphSampler(nn.Module):
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.zeros_(layer.bias)
-        self.value_head = nn.Sequential(
-            nn.Linear(esm_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
                training=None, adjacency=None):
@@ -131,7 +125,7 @@ class SubgraphSampler(nn.Module):
 
         Returns:
             ``SamplingTrajectory``.  Each step contains the graph *after* its
-            action, while ``log_prob`` and ``value`` describe the decision.
+            action, while ``log_prob`` describes the decision.
         """
         if training is None:
             training = self.training
@@ -197,7 +191,6 @@ class SubgraphSampler(nn.Module):
 
             action = candidate_tensor[choice]
             action_int = int(action)
-            value = self.value_head(state).squeeze(-1)
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
             selected_set.add(action_int)
@@ -208,7 +201,7 @@ class SubgraphSampler(nn.Module):
             )
             frontier.difference_update(selected_set)
             graph = self._make_graph(selected, graph_edges, target_local, node_index)
-            steps.append(SamplingStep(graph, log_prob, value))
+            steps.append(SamplingStep(graph, log_prob))
 
         return SamplingTrajectory(baseline_graph, steps)
 

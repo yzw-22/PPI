@@ -105,8 +105,8 @@ class PredictorGraphSelectionTest(unittest.TestCase):
         trajectory = SamplingTrajectory(
             baseline_graph=_graph([0, 1]),
             steps=[
-                SamplingStep(_graph([0, 1]), torch.tensor(0.0), torch.tensor(0.0)),
-                SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)),
+                SamplingStep(_graph([0, 1]), torch.tensor(0.0)),
+                SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0)),
             ],
         )
         trainer = _trainer_for(trajectory)
@@ -144,16 +144,15 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         trajectory = SamplingTrajectory(
             baseline_graph=_graph([0, 1]),
             steps=[
-                SamplingStep(_graph([0, 1]), torch.tensor(0.0), torch.tensor(0.0)),
-                SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0), torch.tensor(0.0)),
+                SamplingStep(_graph([0, 1]), torch.tensor(0.0)),
+                SamplingStep(_graph([0, 1, 2]), torch.tensor(0.0)),
             ],
         )
         sampler = _RecordingSampler(trajectory)
-        # Give the policy/value tensors a differentiable path so the sampler
-        # update can run while this test inspects only the auxiliary count.
+        # Give the policy tensor a differentiable path so the sampler update
+        # can run while this test inspects only the auxiliary count.
         for step in sampler.trajectory.steps:
             step.log_prob = sampler.parameter * 0
-            step.value = sampler.parameter * 0
         predictor = _RecordingPredictor()
         trainer = _RecordingTrainer(
             sampler,

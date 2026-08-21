@@ -41,24 +41,20 @@ r_t=L_{t-1}-L_t, \qquad G_t=r_t+\gamma G_{t+1}
 其中第一步的 \(L_{t-1}\) 是初始图 \(G_0\) 的 loss；不包含子图大小或
 \(\Delta n\) 惩罚。
 
-Sampler 更新为：
+Sampler 更新为（无学习 baseline，advantage 即 return-to-go）：
 
 \[
 \hat A_t=\frac{A_t-\operatorname{mean}_{\mathrm{batch}}(A)}
 {\max(\operatorname{std}_{\mathrm{batch}}(A),10^{-8})},
-\qquad A_t=G_t-V(s_t)
+\qquad A_t=G_t
 \]
 
 \[
-L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t)
+L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t),
+\qquad L_{sampler}=L_{policy}
 \]
 
-\[
-L_{value}=\operatorname{MSE}(V(s_t),G_t), \qquad
-L_{sampler}=L_{policy}+\beta L_{value}
-\]
-
-- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算增量奖励；同一 batch 的全部动作 step 对 detached advantage 做标准化，value loss 保持拟合原始 return-to-go。
+- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算增量奖励；同一 batch 的全部动作 step 对 detached return-to-go 做标准化。
 - Predictor 更新时 Sampler 冻结，只使用每条贪心轨迹的 `final_graph`；无动作时 `final_graph` 就是 `G_0`。
 - F1 使用固定阈值 `0.5`。
 - 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态，训练结束后仅在最佳状态上测试一次。

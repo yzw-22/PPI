@@ -192,7 +192,6 @@ def run(args):
         predictor,
         sampler_optimizer,
         predictor_optimizer,
-        reinforce_baseline_coef=args.reinforce_baseline_coef,
         reinforce_gamma=args.reinforce_gamma,
     )
 
@@ -351,7 +350,6 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--sampler-lr", type=float, default=1e-4)
     parser.add_argument("--predictor-lr", type=float, default=1e-3)
-    parser.add_argument("--reinforce-baseline-coef", type=float, default=0.1)
     parser.add_argument("--reinforce-gamma", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
