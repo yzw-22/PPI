@@ -16,7 +16,7 @@ dataset/split: SHS27k / bfs          seed: 42
 epochs: 10    batch/eval: 32/64      hidden_dim: 256
 GAT: 2 layers, 4 heads, dropout=0.1  sampler: max_steps=10, k_hops=1
 lr: 1e-4 / 1e-3                      gamma: 1.0   F1 阈值: 0.5
-train/val/test: 4562 / 1524 / 1538   可见性: ES 1078 / NS 460 / BS 0
+train/val/test: 4562 / 1524 / 1538   测试集可见性: ES 1078 / NS 460 / BS 0
 ```
 
 复现命令：

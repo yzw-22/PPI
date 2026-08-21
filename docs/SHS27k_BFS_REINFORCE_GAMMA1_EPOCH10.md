@@ -17,7 +17,7 @@ dataset/split: SHS27k / bfs          seed: 42
 epochs: 10    batch/eval: 32/64      hidden_dim: 256
 GAT: 2 layers, 4 heads, dropout=0.1  sampler: max_steps=10; 旧初始邻居机制
 lr: 1e-4 / 1e-3                      gamma: 1.0   F1 阈值: 0.5
-train/val/test: 4562 / 1524 / 1538   可见性: ES 1078 / NS 460 / BS 0
+train/val/test: 4562 / 1524 / 1538   测试集可见性: ES 1078 / NS 460 / BS 0
 ```
 
 奖励：`r_t = L(G_{t-1}) - L(G_t)`，第一步以 G0 为前项，无子图大小惩罚；

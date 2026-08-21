@@ -7,7 +7,7 @@
 
 | 文档 | 定位 | 精简后行数 |
 |---|---|---|
-| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除，3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、22 次运行总表、建议基线命令 | 176 |
+| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除，3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、27 次运行总表、建议基线命令 | 209 |
 | [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md) | 训练性能瓶颈与优化方案（由仓库根目录移入并精简） | 73 |
 | [SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（当前 k_hops 语义，gamma=1.0/10ep） | 45 |
 | [SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（旧 G0/初始邻居机制，当前 CLI 不可复现） | 39 |
@@ -27,6 +27,10 @@
   省时 ~13%，当前代码已为无 value_head 版本）。
 - **纪律**：指标方差大（MacF1 0.36~0.52），结论须多 seed 均值±std；
   推理特征禁止含任何标签信息。
+- **sampler 打分 v1-res（3 seed）**：残差式 pair 投影 + LN/Tanh 打分头替换
+  pairwise MLP，配对 diff 全正（MacF1 +0.050±0.052，3/3 正）且方差显著更小
+  （MacF1 std 0.024 vs 0.075，修复 v1 的 s111 崩溃点 0.358→0.481），为当前
+  代码默认架构，见 EXPERIMENT_SUMMARY.md TL;DR 第 8 条。
 
 ## 精简说明
 
@@ -35,8 +39,6 @@
   优先级表、profiling 项与"必须保持的不变量"。
 - 两份历史实验记录删除完整训练曲线表与冗余限制，95/108 → 45/39 行，
   标注历史性并链接新总结。
-- 四份核心文档总量：原 203（两报告）+ 119（优化文档）= 322 行 → 现 233 行
-  （−28%），信息密度提升，核心数据无丢失。
 - 后续更新：readout 代码回退（`8a1bc79`）后同步修正表述；追加 k_hops=2
   实验（133 → 153 行，16 → 17 次）；追加 value baseline 删除实验并扩至
   3 seed 配对（153 → 176 行，17 → 22 次）。

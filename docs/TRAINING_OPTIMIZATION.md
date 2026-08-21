@@ -9,10 +9,10 @@ Predictor 前向、验证集推理。`reinforce_gamma` 不影响运行时间。
 
 ## 训练稳定性约束（与速度无关，必须保持）
 
-奖励 `r_t=L(G_{t-1})-L(G_t)`（第一步以 G0 为前项），无子图大小惩罚；batch
-内 detached advantage 标准化后算 policy loss，value loss 回归未标准化
-return-to-go。categorical/log-prob、return-to-go、advantage、value loss
-保持 FP32。
+奖励 `r_t=L(G_{t-1})-L(G_t)`（第一步以 G0 为前项），无子图大小惩罚；无学习
+baseline（value_head 已在 `8b22f09` 删除，advantage 即 return-to-go），
+batch 内对 detached return-to-go 标准化后算 policy loss。categorical/
+log-prob、return-to-go、advantage 保持 FP32。
 
 ## 主要瓶颈
 
