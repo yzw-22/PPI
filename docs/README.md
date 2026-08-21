@@ -7,7 +7,7 @@
 
 | 文档 | 定位 | 精简后行数 |
 |---|---|---|
-| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除、sampler res-score、predictor readout v1-rd 负向回退，均为 3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、33 次运行总表、建议基线命令 | 253 |
+| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）与结构变更（value baseline 删除、sampler res-score、predictor readout v1-rd / v1-ppr 负向回退，均为 3 seed 配对）的全部结论、readout 历史结论与设计分析（附文献）、36 次运行总表、建议基线命令 | 281 |
 | [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md) | 训练性能瓶颈与优化方案（由仓库根目录移入并精简） | 73 |
 | [SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（当前 k_hops 语义，gamma=1.0/10ep） | 45 |
 | [SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（旧 G0/初始邻居机制，当前 CLI 不可复现） | 39 |
@@ -39,6 +39,10 @@
   +0.010±0.021，2/3 正；AUC 三项 ≈0），默认保持 k1；s123 单点 MacF1 0.5516
   为全部实验新高（不判定）；v1 时代"k2 正面"由 epoch 数混杂产生，见 TL;DR
   第 10 条。
+- **predictor readout v1-ppr（3 seed，负向已回退）**：借鉴 RISE-DDI 的目标
+  对结构掩码池化 + PPR 标量注入（打分头 3h→5h+1）配对 diff 负向（MacF1
+  −0.049±0.070，s42 崩溃 −0.144 早峰；AUC 3/3 负），代码已回退，见 TL;DR
+  第 11 条——小数据域下 predictor readout 扩容净有害（与 v1-rd 同族结论）。
 
 ## 精简说明
 
