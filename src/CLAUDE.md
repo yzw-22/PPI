@@ -28,12 +28,15 @@
 
 ### Action score
 
-状态是当前已选节点 embedding 的均值。state 和 candidate 使用不同的线性投影，拼接后输入 pairwise MLP：
+状态是当前已选节点 embedding 的均值。state 和 candidate 使用不同的线性投影，
+拼接后映射回 hidden_dim 并加回投影 state（残差），再经 LN/Tanh 打分头：
 
 ```text
-Linear(2*hidden_dim → action_hidden)
-→ LeakyReLU(0.2)
-→ Linear(action_hidden → 1)
+Linear(2*hidden_dim → hidden_dim)（+ state 残差）
+→ Linear(hidden_dim → hidden_dim//2)
+→ LayerNorm(hidden_dim//2)
+→ Tanh
+→ Linear(hidden_dim//2 → 1)
 → candidate softmax
 ```
 

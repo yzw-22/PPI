@@ -27,8 +27,10 @@
 - `G_0` 保留初始节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
 - 后续动作候选是当前 frontier，但只保留距 `G_0` 种子（`u`、`v`、proxy）不超过 `k_hops` 的安全节点；默认 `k_hops=1`。`max_steps` 只限制动作次数（默认 `10`），当前没有 STOP 动作或双目标平衡约束。
 - 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用贪心动作。
-- 动作 score 使用独立的 state/candidate 投影和 pairwise MLP：
-  `Linear(2*hidden_dim→action_hidden) → LeakyReLU → Linear(action_hidden→1)`。
+- 动作 score 使用独立的 state/candidate 投影，拼接后映射回 hidden_dim 并加回
+  投影 state（残差），再过 LN/Tanh 打分头：
+  `Linear(2*hidden_dim→hidden_dim)（+state 残差）→ Linear(hidden_dim→hidden_dim//2)
+  → LayerNorm → Tanh → Linear(hidden_dim//2→1)`。
 
 ## RL 与训练
 

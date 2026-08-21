@@ -30,11 +30,13 @@ def _trajectory_signature(trajectory):
 
 
 class SubgraphSamplerTest(unittest.TestCase):
-    def test_action_score_uses_pairwise_mlp(self):
+    def test_action_score_uses_residual_pair_projection(self):
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
 
-        self.assertEqual(sampler.action_mlp[0].in_features, 8)
-        self.assertEqual(sampler.action_mlp[-1].out_features, 1)
+        self.assertEqual(sampler.pair_proj.in_features, 8)
+        self.assertEqual(sampler.pair_proj.out_features, 4)
+        self.assertEqual(sampler.fc[0].in_features, 4)
+        self.assertEqual(sampler.fc[-1].out_features, 1)
         self.assertFalse(hasattr(sampler, "fixed_num"))
         self.assertEqual(sampler.k_hops, 1)
 

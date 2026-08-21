@@ -93,17 +93,22 @@ class SubgraphSampler(nn.Module):
         self.max_steps = max_steps
         self.k_hops = k_hops
         # State and candidate nodes use independent projections before their
-        # pairwise action score is computed.  The first MLP layer receives the
-        # concatenated pair, so it can mix state and candidate features.
+        # pairwise action score is computed.
         self.state_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
         self.neighbor_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
+        # The pair representation is mapped back to hidden_dim and the
+        # projected state is added back (residual-style), then scored by a
+        # LayerNorm/Tanh head.  The first MLP layer mixes state and candidate
+        # features; the residual keeps the state contribution explicit.
         action_hidden_dim = max(1, hidden_dim // 2)
-        self.action_mlp = nn.Sequential(
-            nn.Linear(2 * hidden_dim, action_hidden_dim),
-            nn.LeakyReLU(negative_slope=0.2),
+        self.pair_proj = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim, action_hidden_dim),
+            nn.LayerNorm(action_hidden_dim),
+            nn.Tanh(),
             nn.Linear(action_hidden_dim, 1),
         )
-        for layer in self.action_mlp:
+        for layer in (self.pair_proj, *self.fc):
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.zeros_(layer.bias)
@@ -180,7 +185,11 @@ class SubgraphSampler(nn.Module):
             )
             state_repr = state_repr.expand(candidate_repr.shape[0], -1)
             attention_input = torch.cat((state_repr, candidate_repr), dim=-1)
-            scores = self.action_mlp(attention_input).squeeze(-1)
+            # Residual-style pair mixing: map the concatenated pair back to
+            # hidden_dim and add the projected state back to every row.
+            mapped = self.pair_proj(attention_input)
+            h = mapped + state_repr
+            scores = self.fc(h).squeeze(-1)
             probs = torch.softmax(scores, dim=0)
             if training:
                 choice = torch.distributions.Categorical(probs).sample()
