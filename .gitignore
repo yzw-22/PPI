@@ -1,4 +1,5 @@
 dataset/**
 !dataset/**/*.md
+dataset_ppisplit/**
 **/__pycache__/
 picture/

@@ -32,7 +32,7 @@ class PPIGraph:
     Args:
         name: dataset name, one of ``{'SHS27k', 'SHS148k', 'STRING'}``.
         split: split method. Available splits depend on the dataset
-            (``{'SHS27k': ['bfs', 'dfs', 'random'], 'SHS148k': ['dfs', 'random'], 'STRING': ['dfs']}``).
+            (``{'SHS27k': ['bfs', 'dfs', 'random'], 'SHS148k': ['bfs', 'dfs', 'random'], 'STRING': ['dfs']}``).
         root: directory holding the dataset files.
         device: where to keep the feature tensor / labels (default ``'cpu'``;
             pass ``'cuda'`` when training on GPU).
@@ -56,7 +56,7 @@ class PPIGraph:
     #: available split methods per dataset.
     AVAILABLE_SPLITS = {
         "SHS27k": ["bfs", "dfs", "random"],
-        "SHS148k": ["dfs", "random"],
+        "SHS148k": ["bfs", "dfs", "random"],
         "STRING": ["dfs"],
     }
     SPLIT_NAMES = ["train", "val", "test"]

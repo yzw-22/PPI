@@ -324,7 +324,7 @@ def parse_args():
     parser.add_argument(
         "--split", choices=["bfs", "dfs", "random"], default="bfs",
         help="split method; the valid choices depend on --dataset "
-             "(SHS148k has no bfs, STRING only provides dfs)",
+             "(STRING only provides dfs)",
     )
     parser.add_argument(
         "--output", default=None,
