@@ -153,7 +153,6 @@ class SubgraphSampler(nn.Module):
         baseline_graph = self._make_graph(
             selected, graph_edges, target_local, node_index
         )
-        steps = []
         allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
 
         # ``allowed_nodes`` is computed once per trajectory. The frontier is
@@ -167,6 +166,10 @@ class SubgraphSampler(nn.Module):
         }
         frontier.difference_update(selected_set)
 
+        # Step graphs are snapshotted incrementally and materialized together
+        # after the trajectory: the decision loop stays light and the shared
+        # ``local`` id map is extended rather than rebuilt per step.
+        step_records = []
         for _ in range(self.max_steps):
             candidates = sorted(frontier)
             if not candidates:
@@ -209,9 +212,16 @@ class SubgraphSampler(nn.Module):
                 if neighbor in allowed_nodes
             )
             frontier.difference_update(selected_set)
-            graph = self._make_graph(selected, graph_edges, target_local, node_index)
-            steps.append(SamplingStep(graph, log_prob))
+            step_records.append((log_prob, selected.copy(), graph_edges.copy()))
 
+        step_graphs = self._make_graphs(
+            [(selected, edges) for _, selected, edges in step_records],
+            target_local, node_index,
+        )
+        steps = [
+            SamplingStep(graph, log_prob)
+            for (log_prob, _, _), graph in zip(step_records, step_graphs)
+        ]
         return SamplingTrajectory(baseline_graph, steps)
 
     def forward(self, node_features, edge_index, target_nodes, node_index=None,
@@ -357,3 +367,39 @@ class SubgraphSampler(nn.Module):
         return SampledGraph(
             node_index[selected_tensor], selected_tensor, edge_index, target_nodes
         )
+
+    @staticmethod
+    def _make_graphs(snapshots, target_local, node_index):
+        """Materialize consecutive step graphs for one trajectory.
+
+        Step snapshots contain monotonically growing ``selected`` node lists,
+        so the local id map is extended incrementally across snapshots instead
+        of being rebuilt from scratch per graph.  The produced tensors are
+        identical to calling :meth:`_make_graph` on every snapshot.
+        """
+        device = node_index.device
+        graphs = []
+        local = {}
+        for selected, graph_edges in snapshots:
+            for node in selected[len(local):]:
+                local[node] = len(local)
+            selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
+            directed_edges = []
+            for source, target in sorted(graph_edges):
+                directed_edges.extend(((local[source], local[target]),
+                                       (local[target], local[source])))
+            if directed_edges:
+                edge_index = torch.tensor(
+                    directed_edges, device=device, dtype=torch.long
+                ).t()
+            else:
+                edge_index = torch.empty((2, 0), device=device, dtype=torch.long)
+            target_nodes = torch.tensor(
+                [local[int(target_local[0])], local[int(target_local[1])]],
+                device=device,
+                dtype=torch.long,
+            )
+            graphs.append(SampledGraph(
+                node_index[selected_tensor], selected_tensor, edge_index, target_nodes
+            ))
+        return graphs

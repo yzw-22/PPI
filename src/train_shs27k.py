@@ -162,6 +162,12 @@ def run(args):
     train_graph = graph.build_graph("train", undirected=True)
     val_graph = graph.build_graph("val", undirected=True)
     test_graph = graph.build_graph("test", undirected=True)
+    # Features are stored as bfloat16 on disk.  Convert each split once up
+    # front instead of repeatedly casting gathered features inside the
+    # sampler/predictor (a pure speed optimization: element-wise conversion
+    # is order-independent, so results are bit-identical to per-step casts).
+    for split_graph in (train_graph, val_graph, test_graph):
+        split_graph["node_feat"] = split_graph["node_feat"].to(torch.float32)
     train_indices = graph.get_ppi_indices("train")
     val_indices = graph.get_ppi_indices("val")
     test_indices = graph.get_ppi_indices("test")
