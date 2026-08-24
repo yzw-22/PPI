@@ -69,10 +69,11 @@ class SamplingTrajectory:
 class SubgraphSampler(nn.Module):
     """Select a bounded subgraph around one target PPI pair.
 
-    ``node_features`` and ``edge_index`` describe the current data split.  The
-    edge connecting the target pair is excluded in both directions while
-    sampling: lazily from a shared immutable split-level adjacency when one is
-    supplied, or by removing it from ``edge_index`` when building standalone.
+    ``node_features`` and ``edge_index`` describe the shared knowledge graph
+    (the full dataset graph in the training entry).  The edge connecting the
+    target pair is excluded in both directions while sampling: lazily from a
+    shared immutable graph-level adjacency when one is supplied, or by
+    removing it from ``edge_index`` when building standalone.
     ``node_index`` maps rows in ``node_features`` to global protein indices;
     when omitted, rows are treated as global indices.
 
@@ -118,12 +119,12 @@ class SubgraphSampler(nn.Module):
         """Sample one trajectory around ``target_nodes``.
 
         Args:
-            node_features: ``[N, esm_dim]`` tensor for the current split.
-            edge_index: ``[2, E]`` local edges for the current split.
+            node_features: ``[N, esm_dim]`` tensor for the shared knowledge graph.
+            edge_index: ``[2, E]`` local edges for the shared knowledge graph.
             target_nodes: two global protein indices ``(u, v)``.
             node_index: optional global id for each feature row.
             training: use stochastic actions when true; defaults to module mode.
-            adjacency: optional shared split-level adjacency (``tuple`` of
+            adjacency: optional shared graph-level adjacency (``tuple`` of
                 ``frozenset``, see :meth:`_build_adjacency`).  When given, the
                 target edge is excluded lazily per target; when omitted it is
                 built from ``edge_index`` with the target edge already removed.
@@ -280,8 +281,9 @@ class SubgraphSampler(nn.Module):
         """Return the undirected adjacency of ``edge_index`` as an immutable
         ``tuple`` of ``frozenset``.
 
-        Immutability lets one structure be built once per split and shared by
-        every target; each target excludes its own edge lazily in ``sample``.
+        Immutability lets one structure be built once per graph (the full
+        dataset graph in the training entry) and shared by every target; each
+        target excludes its own edge lazily in ``sample``.
         """
         adjacency = [set() for _ in range(num_nodes)]
         for source, target in edge_index.t().tolist():

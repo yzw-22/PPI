@@ -174,9 +174,40 @@ class PPIGraph:
 
         ``node_index`` is sorted and ``edge_index`` always refers to *local*
         node ids (0..N-1).  The graph and its feature/proxy candidate pool
-        therefore contain only nodes present in the requested split.
+        therefore contain only nodes present in the requested split.  The
+        training entry uses :meth:`build_full_graph` as the knowledge graph
+        instead; this split-local builder remains public for node-set queries
+        (e.g. test visibility grouping) and standalone use.
         """
-        ppi_idx = self.get_ppi_indices(split_name)
+        return self._build_from_ppi_indices(
+            self.get_ppi_indices(split_name), undirected
+        )
+
+    def build_full_graph(self, undirected=True):
+        """Build the full dataset graph (every PPI pair, every protein).
+
+        The training entry (``src.train_shs27k``) uses this graph as the
+        knowledge graph shared by training, validation and test sampling; the
+        split only selects the target pairs (and the training-node set used
+        for test visibility grouping).  Returns the same fields as
+        :meth:`build_graph`:
+            edge_index  : LongTensor [2, E]   local node indices of each edge (u -> v)
+            edge_label  : FloatTensor [E, 7]  multi-hot label of each edge
+            node_index  : LongTensor [N]      global protein indices of the graph's nodes
+            node_feat   : Tensor   [N, 2560]  ESM-2 embeddings of the nodes
+
+        ``node_index`` is sorted and strictly increasing, so targets map by
+        binary search; for the current datasets every protein appears in at
+        least one PPI pair, hence ``node_index`` spans every protein and local
+        ids equal global ids.  The feature/proxy candidate pool therefore
+        contains every protein of the dataset.
+        """
+        return self._build_from_ppi_indices(
+            torch.arange(len(self.ppi_list), device=self.device), undirected
+        )
+
+    def _build_from_ppi_indices(self, ppi_idx, undirected):
+        """Build the graph induced by the PPI rows ``ppi_idx`` (shared body)."""
         u = self.ppi[ppi_idx, 0]
         v = self.ppi[ppi_idx, 1]
         labels = self.ppi_labels[ppi_idx]  # [E, 7]

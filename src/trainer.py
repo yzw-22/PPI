@@ -7,8 +7,9 @@ from torch.nn import functional as F
 class AlternatingTrainer:
     """Train a :class:`SubgraphSampler` and predictor with batched updates.
 
-    The graph arguments must describe one dataset split.  The target edge is
-    removed by ``SubgraphSampler`` before the trajectory is generated.
+    The graph arguments must describe one shared knowledge graph (the full
+    dataset graph in the training entry).  The target edge is removed by
+    ``SubgraphSampler`` before the trajectory is generated.
     """
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,

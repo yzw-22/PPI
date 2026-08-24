@@ -61,14 +61,21 @@ def _metrics(labels, probabilities):
     }
 
 
-def evaluate(trainer, node_features, split_graph, targets, labels, batch_size,
-             training_node_index):
-    """Evaluate final graphs and group pairs by training-node visibility."""
+def evaluate(trainer, node_features, graph, targets, labels, batch_size,
+             training_node_index, adjacency=None):
+    """Evaluate final graphs and group pairs by training-node visibility.
+
+    ``graph`` is the shared knowledge graph dict (the full dataset graph in
+    the training entry).  ``adjacency`` is its shared immutable graph-level
+    adjacency; when omitted it is rebuilt from ``graph`` each call so the
+    function stays self-contained.
+    """
     trainer.sampler.eval()
     trainer.predictor.eval()
-    adjacency = trainer.sampler._build_adjacency(
-        split_graph["edge_index"], node_features.shape[0]
-    )
+    if adjacency is None:
+        adjacency = trainer.sampler._build_adjacency(
+            graph["edge_index"], node_features.shape[0]
+        )
     probabilities = []
     with torch.no_grad():
         for start in range(0, len(targets), batch_size):
@@ -76,9 +83,9 @@ def evaluate(trainer, node_features, split_graph, targets, labels, batch_size,
             trajectories = [
                 trainer.sampler.sample(
                     node_features,
-                    split_graph["edge_index"],
+                    graph["edge_index"],
                     target,
-                    split_graph["node_index"],
+                    graph["node_index"],
                     training=False,
                     adjacency=adjacency,
                 )
@@ -159,15 +166,17 @@ def run(args):
         args.dataset, args.split, root=args.root, device=device, cache_dir=args.cache_dir
     )
     esm_dim = graph.tensor.shape[1]
-    train_graph = graph.build_graph("train", undirected=True)
-    val_graph = graph.build_graph("val", undirected=True)
-    test_graph = graph.build_graph("test", undirected=True)
-    # Features are stored as bfloat16 on disk.  Convert each split once up
+    # The knowledge graph is the full dataset graph for training, validation
+    # and test alike; the split only selects the target pairs (and the
+    # training-node set used for test visibility grouping below).
+    full_graph = graph.build_full_graph(undirected=True)
+    # Features are stored as bfloat16 on disk.  Convert the graph once up
     # front instead of repeatedly casting gathered features inside the
     # sampler/predictor (a pure speed optimization: element-wise conversion
     # is order-independent, so results are bit-identical to per-step casts).
-    for split_graph in (train_graph, val_graph, test_graph):
-        split_graph["node_feat"] = split_graph["node_feat"].to(torch.float32)
+    full_graph["node_feat"] = full_graph["node_feat"].to(torch.float32)
+    # Training-split node set, used only to group test pairs into BS/ES/NS.
+    train_node_index = graph.build_graph("train")["node_index"]
     train_indices = graph.get_ppi_indices("train")
     val_indices = graph.get_ppi_indices("val")
     test_indices = graph.get_ppi_indices("test")
@@ -201,10 +210,11 @@ def run(args):
         reinforce_gamma=args.reinforce_gamma,
     )
 
-    # Build the split-level adjacency once instead of once per batch; each
+    # Build the full-graph adjacency once and share it across every training
+    # batch, the per-epoch validation pass and the final test pass; each
     # target excludes its own edge lazily inside ``SubgraphSampler.sample``.
-    train_adjacency = sampler._build_adjacency(
-        train_graph["edge_index"], train_graph["node_feat"].shape[0]
+    full_adjacency = sampler._build_adjacency(
+        full_graph["edge_index"], full_graph["node_feat"].shape[0]
     )
 
     results = []
@@ -221,24 +231,25 @@ def run(args):
             batch_indices = order[start:start + args.batch_size]
             batch_size = batch_indices.numel()
             metrics = trainer.alternating_batch_step(
-                train_graph["node_feat"],
-                train_graph["edge_index"],
+                full_graph["node_feat"],
+                full_graph["edge_index"],
                 train_targets[batch_indices],
                 train_labels[batch_indices],
-                train_graph["node_index"],
-                adjacency=train_adjacency,
+                full_graph["node_index"],
+                adjacency=full_adjacency,
             )
             batch_records.append((batch_size, metrics))
 
         train_metrics = _aggregate_train_metrics(batch_records)
         val_metrics = evaluate(
             trainer,
-            val_graph["node_feat"],
-            val_graph,
+            full_graph["node_feat"],
+            full_graph,
             val_targets,
             val_labels,
             args.eval_batch_size,
-            train_graph["node_index"],
+            train_node_index,
+            adjacency=full_adjacency,
         )
         record = {
             "epoch": epoch,
@@ -294,12 +305,13 @@ def run(args):
                 f"test_{key}": value
                 for key, value in evaluate(
                     trainer,
-                    test_graph["node_feat"],
-                    test_graph,
+                    full_graph["node_feat"],
+                    full_graph,
                     test_targets,
                     test_labels,
                     args.eval_batch_size,
-                    train_graph["node_index"],
+                    train_node_index,
+                    adjacency=full_adjacency,
                 ).items()
             },
         }
