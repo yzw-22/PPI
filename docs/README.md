@@ -1,92 +1,160 @@
-# docs 目录总结报告
+# PPI 项目报告（docs 唯一文档）
 
-> 生成于超参数调优与结构变更实验后。本文件是 docs 目录的索引与精简说明。
+> 本文件是 `docs/` 目录的唯一报告，替代原 README 索引、TRAINING_OPTIMIZATION、
+> EXPERIMENT_SUMMARY 与两份历史实验记录。
+>
+> 背景：训练/验证/测试的采样知识图谱（KG）由 split-local 图改为**全数据集全图**
+> （见下文「知识图谱设计」），原文档中所有以 split-local KG 为前提的表述与实验
+> 结论不再直接成立，故压缩为单份报告。本文同时是当前代码的唯一文档事实源。
 
-## 目录结构与定位
+## 1. 项目概述
 
-| 文档 | 定位 | 精简后行数 |
-|---|---|---|
-| [EXPERIMENT_SUMMARY.md](EXPERIMENT_SUMMARY.md) | **当前实验总结**：超参数调优（gamma/hidden/epochs/max_steps/k_hops）、结构变更（value baseline 删除、sampler res-score）、划分对比（bfs/dfs/random、SHS27k/SHS148k）、G0-only 诊断（崩溃根因定位 + sampler 冗余/有害判定）、dfs 长训练与 random 划分可见性机制的全部结论（均为 3 seed 配对）、56 次运行总表、建议基线命令；已被多 seed 否决的设计历史（attn 系列 readout、u⊙v+max-pool、掩码池化+PPR）已删除，详见 git 历史 `8a1bc79`/`6bbfaca`/`0d4f354` | 380 |
-| [TRAINING_OPTIMIZATION.md](TRAINING_OPTIMIZATION.md) | 训练性能瓶颈与优化方案（由仓库根目录移入并精简） | 73 |
-| [SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_KHOPS1_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（当前 k_hops 语义，gamma=1.0/10ep） | 45 |
-| [SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md](SHS27k_BFS_REINFORCE_GAMMA1_EPOCH10.md) | 历史单次实验记录（旧 G0/初始邻居机制，当前 CLI 不可复现） | 39 |
+- 7 类 PPI 多标签预测（reaction / binding / ptmod / activation / inhibition /
+  catalysis / expression），标签为按无向蛋白对 OR 聚合的 multi-hot 向量。
+- 蛋白特征为预计算 ESM-2 3B（`esm2_t36_3B_UR50D`）平均池化 embedding，
+  `[M, 2560]` bfloat16（`{name}_tensor.pt`，`tensor[i]` = Protein Index `i`）。
+- 数据：SHS27k（1690 蛋白 / 7624 PPI）、SHS148k（5189 / 44488）、
+  STRING（15335 / 593397）；`ppi_list` 中每个无向 PPI 对恰好出现一次（方向任意，
+  不存在双向重复），`ppi_list` 行号 = PPI Index。
+- 管线：split 选出目标 PPI 对 → 全图 KG 上的 REINFORCE 子图 Sampler → GAT
+  Predictor（多图 batch 编码 → `h_u+h_v`、`|h_u−h_v|`、图均值 → 7 维 logits）。
 
-## 核心结论速览（详见 EXPERIMENT_SUMMARY.md）
+## 2. 知识图谱设计（当前）
 
-- **当前最优配置**：`v1 + hidden 128 + gamma 0.9 + 20 epochs + max_steps 5`，
-  seed 42：test MacF1 0.5239 / MicF1 0.5758 / MacAUC 0.7553 / MicAUC 0.7734。
-- **readout 设计**：当前为 v1 直通（`h_u+h_v`、`|h_u−h_v|`、图均值 → 3h→7）。
-  曾试的注意力 readout、`u⊙v`+max-pool、掩码池化+PPR 等扩容方案均已多 seed
-  否决并回退（详见 git 历史），文档不再保留其分析。
-- **超参**：gamma 0.9 > 1.0（v1）；hidden 128 > 256（小数据域降过拟合，
-  提速 ~35%）；max_steps 5 > 10（v1 全面受益，提速 ~47%）；k_hops 2 > 1
-  （s42：val MacAUC 0.7587 vs 0.7390、test 四项全升，但未超 ms5/h128
-  最优，单 seed 待扩）；value baseline 删除（3 seed 配对无显著指标差异，
-  省时 ~13%，当前代码已为无 value_head 版本）。
-- **纪律**：指标方差大（MacF1 0.36~0.52），结论须多 seed 均值±std；
-  推理特征禁止含任何标签信息。
-- **sampler 打分 v1-res（3 seed）**：残差式 pair 投影 + LN/Tanh 打分头替换
-  pairwise MLP，配对 diff 全正（MacF1 +0.050±0.052，3/3 正）且方差显著更小
-  （MacF1 std 0.024 vs 0.075，修复 v1 的 s111 崩溃点 0.358→0.481），为当前
-  代码默认架构，见 EXPERIMENT_SUMMARY.md TL;DR 第 7 条。
-- **res-score × k_hops 2（3 seed，纯净配对）**：与 k1 无显著差异（MacF1
-  +0.010±0.021，2/3 正；AUC 三项 ≈0），默认保持 k1；s123 单点 MacF1 0.5516
-  为全部实验新高（不判定）；v1 时代"k2 正面"由 epoch 数混杂产生，见 TL;DR
-  第 8 条。
-- **SHS27k dfs 划分（3 seed，首次 dfs）**：同配置（ms5/h128/g0.9/20ep）
-  下五项指标 3/3 大幅优于 bfs（MacF1 0.6006±0.0071 vs 0.5148±0.0238，
-  MacAUC 0.8186 vs 0.7509），方差仅为 bfs 约 1/4——但这是划分难度属性
-  （dfs 测试集训练可见占比 79.5% vs 70.1%），非模型改进，跨划分不可混比，
-  见 TL;DR 第 9 条。
-- **SHS148k dfs 划分（3 seed，首次 SHS148k）**：同配置下 MacF1
-  0.6355±0.0139 / MacAUC 0.8501（bestEp 全 19，20ep 可能未到上限），较
-  SHS27k dfs 五项 3/3 正差（MacF1 +0.035）——归因数据规模（train 5.8×）
-  与测试可见性（86.1%），跨数据集不可配对，非模型改进；单次训练 ~4.1 h，
-  见 TL;DR 第 10 条。
-- **新随机 bfs 划分（3 seed，`dataset_ppisplit/`）**：SHS27k 新 bfs 全面
-  优于旧 bfs（MacF1 0.5479±0.0158 vs 0.5148，3/3 正）——划分随机波动本身
-  达 MacF1 ~0.03-0.06 量级，见 TL;DR 第 11 条；SHS148k bfs 则灾难性差于
-  dfs（MacF1 0.4163 vs 0.6355，0/3 正，s42/s123 崩溃 bestEp=1 早峰），
-  bfs 划分效应在更大数据上被放大，见 TL;DR 第 12 条。
-- **G0-only 诊断（max_steps=0，无子图/无 RL）**：SHS148k bfs 的"val 不随
-  训练改善"在去掉子图与 REINFORCE 后依然存在（valMacAUC 0.7327±0.0025，
-  3 seed，testMacF1 0.4282±0.0153）——崩溃根因是 bfs 划分数据属性（train
-  稠密核心 vs val 稀疏外围），非 RL 机制；dfs 对照 G0-only 即达全配水平
-  （0.8468 vs 0.8476）——dfs 上子图通路贡献≈0，高指标来自 pair 特征本身，
-  sampler 在 dfs 上近乎冗余（3 seed 确认，省时 ~14×），见 TL;DR 第 13/14 条。
-- **长训练/hidden（ms0 形态）**：40ep 为甜点（SHS148k dfs 3-seed
-  valMacAUC 0.8557±0.0004 vs 20ep 0.8482，MacF1 持平、方差小 16×），60ep
-  无额外收益，h256 无显著差异（s42 单点 +0.014 被 s111 −0.021 抵消）；
-  SHS27k dfs 上 ms0 亦 ≥ ms5（0.6129 vs 0.6008，单 seed），见 TL;DR 第 15 条。
-- **SHS148k random 划分（3 seed，首次 random）**：MacF1 0.8444±0.0109 /
-  valMacAUC 0.9660±0.0001——但为**划分可见性虚高**（test BS 96.5%，train/
-  test 节点高度共享，预测退化为已见节点模式匹配），非模型改进，与 dfs
-  （BS 0）不可混比；报告须标注划分，见 TL;DR 第 16 条。
-- **ms0 提升（SHS27k dfs 3-seed 纯净配对，见 TL;DR 第 17 条）**：去掉
-  sampler 后 MacF1 0.6006±0.0071 → **0.6295±0.0172（配对 +0.029±0.022，
-  3/3 正）**、valMacAUC +0.019（3/3 正）——小数据域下 RL 采样净有害；
-  SHS148k dfs ms0 持平（0.6355→0.6352）但成本 ↓14×。**sampler/RL 在两个
-  dfs 数据集均无正向贡献，G0-only predictor 为确认最优形态。**
+- **训练、验证、测试三阶段共用同一张全图**：节点 = 全部蛋白，边 = 全部 PPI 对
+  （双向），特征 = 全部 ESM embedding，proxy 候选池 = 全部蛋白。由
+  `PPIGraph.build_full_graph(undirected=True)` 构建，`train_shs27k.py` 中只构建
+  一次并全程共享（含邻接表 `full_adjacency`）。
+- **split 只做两件事**：① 决定各阶段的目标 PPI 对（`get_ppi_indices` 提取
+  train/val/test targets 与 labels）；② 提供训练节点集合，用于测试集
+  BS/ES/NS 可见性分组（`train_node_index`，来自 `build_graph("train")`）。
+- **不变量（必须保持）**：
+  - 目标边 `(u,v)` 与 `(v,u)` 在每次采样前从安全邻接中排除（
+    `_TargetSafeAdjacency` 惰性视图，共享邻接不被修改），且不进入 `G_0` 与
+    step graph；
+  - `G_0`（`baseline_graph`）只含 `u`、`v` 与必要虚拟 proxy（安全邻接为空的
+    目标才选 proxy，按 embedding 余弦相似度，两目标可共享）；`G_0` 保留选中
+    节点间的全部安全诱导边；
+  - 候选限制在距 `G_0` 种子不超过 `k_hops`（默认 1）的安全区域内；`max_steps`
+    （默认 10）只限制动作次数，无 STOP 动作；
+  - Predictor 训练与评估均使用 `final_graph`（无动作时即 `G_0`）；
+  - **推理特征只含 ESM embedding 与无标签拓扑**：`edge_label` 是公共返回字段
+    但训练流程从不读取，标签只作为 train/val/test 目标对的 BCE 目标——全图
+    含 val/test 边作为拓扑不构成标签泄漏；
+  - 奖励/return-to-go/advantage 保持 FP32；F1 阈值固定 0.5。
+- 说明：`build_graph(split_name)` 的 split-local 构建保留（节点集合查询、测试、
+  外部使用），但训练入口不再以它作为 KG。
 
-## 精简说明
+## 3. 训练协议（AlternatingTrainer）
 
-- `TRAINING_OPTIMIZATION.md` 由根目录移入 docs（`git mv`，根 `CLAUDE.md`
-  链接已同步更新），119 → 73 行：压缩瓶颈/实施顺序的描述文字，保留
-  优先级表、profiling 项与"必须保持的不变量"。
-- 两份历史实验记录删除完整训练曲线表与冗余限制，95/108 → 45/39 行，
-  标注历史性并链接新总结。
-- 后续更新：readout 代码回退（`8a1bc79`）后同步修正表述；追加 k_hops=2
-  实验（133 → 153 行，16 → 17 次）；追加 value baseline 删除实验并扩至 3 seed 配对（153 → 176 行，
-  17 → 22 次）；划分实验（dfs/SHS148k/新 bfs，176 → 401 行，22 → 48 次）；
-  删去多 seed 否决的设计历史（attn 系列/u⊙v+max-pool/PPR，401 → 278 行，
-  48 → 32 次）；追加 SHS148k G0-only 崩溃诊断（278 → 315 行，32 → 36 次）；
-  追加 dfs ms0 3-seed 等价性与 40ep 长训练探测（315 → 329 行，36 → 39 次）；
-  追加 40ep 3-seed/h256/60ep 探测（329 → 349 行，39 → 46 次）；
-  追加 random 划分发现与 SHS27k dfs ms0 验证（349 → 363 行，46 → 50 次）；
-  追加 SHS27k dfs ms0 3-seed 提升确认（363 → 380 行，50 → 56 次）。
+每 batch 交替两次更新：
 
-## 更新约定
+1. **Sampler 更新**（Predictor 冻结，stochastic 轨迹）：对每条轨迹计算
+   `G_0` 与所有 step graph 的 BCE loss，增量奖励 `r_t = L(G_{t-1}) − L(G_t)`
+   （第一步以 `G_0` loss 为前项；无子图大小/Δn 惩罚），按 `G_t = r_t + γG_{t+1}`
+   计算 return-to-go；无学习 baseline，advantage 即 detached RTG，batch 内
+   标准化 `Â = (A − mean)/max(std, 1e-8)` 后算
+   `L_policy = −Σ log π(a_t|s_t)·stopgrad(Â)` 更新 Sampler。
+2. **Predictor 更新**（Sampler 冻结，greedy 轨迹）：只用每条轨迹的
+   `final_graph` 做 BCE with logits 更新。
 
-- 新实验结论只写进 `EXPERIMENT_SUMMARY.md`（保持单一事实源）；
-- 历史文档不再追加新内容，仅保留可复现配置与最佳结果；
-- 训练稳定性/泄漏红线以 `TRAINING_OPTIMIZATION.md` 与 `src/CLAUDE.md` 为准。
+动作打分：state/candidate 独立投影，拼接映射回 hidden_dim 并加回投影 state
+（残差）→ `Linear(d→d//2) → LayerNorm → Tanh → Linear(d//2→1)` → softmax；
+训练记录 Categorical `log_prob`，评估/更新用 greedy argmax。
+
+超参默认：`--epochs 10 --batch-size 32 --eval-batch-size 64 --hidden-dim 256
+--max-steps 10 --k-hops 1 --gnn-layers 2 --heads 4 --dropout 0.1
+--sampler-lr 1e-4 --predictor-lr 1e-3 --reinforce-gamma 1.0`。
+历史推荐配置（split-local 时代，见 §6）：`h128 / γ0.9 / 20ep / ms5`。
+
+## 4. 评估协议
+
+- 训练期间**只评估验证集**（每 epoch 一次）；按验证 Macro-AUC 保存最佳
+  Sampler/Predictor 状态（`--checkpoint-dir` 指定时落盘，否则内存保存）；
+  训练结束后**只在最佳 checkpoint 上测试一次**。
+- 指标：Macro/Micro ROC-AUC 与固定阈值 0.5 的 Macro/Micro F1；常数类（单值）
+  子集 AUC 报 `None`（与空分组同约定），不参与最佳选择。
+- 测试集按两端节点相对训练节点集合的可见性分 BS（两端均训练可见）/ ES（单端）
+  / NS（均不可见）；空分组返回 `count=0` 与 `None`。
+- 可见性分组**仍按 train split 节点集**计算（全图下"图中节点"无区分度）。
+
+## 5. 数据与性能
+
+### 5.1 规模（全图即有向边数）
+
+| 数据集 | 蛋白 | PPI 对 | 全图有向边 | 全图 node_feat(fp32) |
+|---|---:|---:|---:|---:|
+| SHS27k | 1,690 | 7,624 | 15,248 | ~17 MB |
+| SHS148k | 5,189 | 44,488 | 88,976 | ~53 MB |
+| STRING | 15,335 | 593,397 | 1,186,794 | ~157 MB |
+
+每个蛋白都出现在 ≥1 条 PPI 中，因此全图 `node_index` 覆盖全部蛋白且局部 id =
+全局 id（实现仍用 `unique()` 通用处理）。
+
+### 5.2 数据喂入（结论）
+
+训练循环用 `torch.randperm` + 批量 fancy-index gather 直接从预载 tensor 取数
+（`train_targets[batch_indices]` / `train_labels[batch_indices]`），这是该负载
+（数据完全驻留内存/显存、无 I/O、无逐样本预处理）下的最优形态：
+实测（SHS27k train）每 epoch 取数 0.75 ms；DataLoader `num_workers=0` 慢 ~34×，
+`num_workers=2` 因每 epoch 重 spawn + pickle 整个 PPIGraph 慢 ~3800×，且 CUDA
+下 `get_dataloader` 的守卫禁止 workers/pin_memory、逐样本 `int()` 会引入 D2H
+同步。`get_dataloader`/`_PPIDataset` 保留为公共 API（测试/外部轻量使用），
+训练路径不经过它。
+
+### 5.3 邻接与计算
+
+- 全图邻接（不可变 `tuple[frozenset]`）**一次性构建**，训练 batch、每 epoch
+  验证、最终测试共享（`train_shs27k.py` 与 `evaluate(..., adjacency=...)`）；
+  目标边由惰性视图逐 target 排除，无逐 target 复制。
+- 采样区域/候选池随全图度数扩大（STRING 的 hub 目标 1-hop 区域可能很大），
+  受 `k_hops`/`max_steps` 约束；训练时间主要由 Sampler 轨迹生成、Sampler 更新
+  阶段对多个 step graph 的 Predictor 前向、验证推理构成。
+- 仍有效的优化方向（与 split-local 无关的部分）：P1 缓存归一化 embedding 与
+  candidate 投影、增量维护 selected embedding 均值、减少/合并 Predictor 重复
+  forward；P2 评估 `torch.inference_mode()`、batch size 扫描、Predictor BF16/
+  AMP；P3 STRING 用 CSR tensor 邻接 + tensor frontier（全图下收益更大）。
+  Profiling 需分别统计 sampler_g0_build / sampler_action_score /
+  sampler_graph_build / predictor_baseline / predictor_step_graphs /
+  predictor_update / validation / test_evaluation；CUDA 计时前
+  `torch.cuda.synchronize()`。
+
+## 6. 历史实验记录（split-local KG 时代，仅作配置起点）
+
+> **失效声明**：以下结论全部产生于 KG 为 split-local 图的旧代码（全图改造
+> 前），数值与排名不可直接迁移到全图 KG，仅保留为超参/协议起点与仓库历史。
+> 全图改造后需重新验证。
+
+- 56 次运行（3-seed 配对为主）关键结论：
+  - 最优配置（旧）：`res-score + hidden 128 + gamma 0.9 + 20 epochs +
+    max_steps 5`（SHS27k bfs test MacF1 0.5239）；res-score 打分头为当前代码
+    默认架构（配对 MacF1 +0.050±0.052，方差更小）；value baseline 删除无显著
+    指标差异（省时 ~13%），当前代码即无 value_head 版本。
+  - 划分效应是最大"杠杆"且**跨划分不可混比**：dfs 划分任务系统性更易
+    （SHS27k MacF1 0.601 vs bfs 0.515，测试可见性 79.5% vs 70.1%）；新随机
+    bfs 划分波动即达 MacF1 ~0.03-0.06；SHS148k random 指标虚高（test BS
+    96.5%，预测退化为已见节点模式匹配）；SHS148k bfs 训练崩溃为划分数据属性
+    （train 稠密核心 vs val 稀疏外围），与 RL 机制无关。
+  - sampler/RL 在 dfs 划分上无正向贡献（ms0 即达全配水平：SHS27k dfs MacF1
+    0.6295±0.0172 vs ms5 0.6006，3/3 正；SHS148k dfs 持平但省时 ~14×）；
+    G0-only predictor 为旧代码确认的最优形态。
+  - 长训练：40ep 为成本-收益甜点（SHS148k dfs ms0 valMacAUC 0.8557±0.0004），
+    h256 vs h128 无显著差异；k_hops 2 纯净配对无显著收益，默认 k1。
+- 纪律（仍然适用）：指标方差大（MacF1 0.36~0.52），结论须多 seed 配对均值±std；
+  推理特征禁止任何标签信息；报告结果须标注数据集与 split。
+- 建议命令（配置起点，全图 KG 自动生效）：
+
+```bash
+python -m src.train_shs27k \
+  --dataset SHS27k --split bfs --device cuda \
+  --epochs 20 --hidden-dim 128 --max-steps 5 --reinforce-gamma 0.9 \
+  --seed 42 --output /tmp/ppi_best.json
+```
+
+## 7. 验证
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q src tests
+git diff --check
+```

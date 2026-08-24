@@ -4,18 +4,19 @@
 
 - `PPIGraph(name, split, root, device, cache_dir)` 加载一个数据集及其 split。
 - `build_graph(split_name="train", undirected=True)` 构建 split-local 图，并保留公共 `edge_label` 字段。
+- `build_full_graph(undirected=True)` 构建**全数据集全图**（全部蛋白节点 + 全部 PPI 边），训练入口以它作为训练/验证/测试共用的采样 KG。
 - `edge_index` 是局部节点索引；`node_index` 是 local → global 映射；`node_feat` 是节点 embedding。
 - 支持组合：SHS27k 的 `bfs/dfs/random`，SHS148k 的 `dfs/random`，STRING 的 `dfs`。
-- 不提供 `remap_nodes` 选项；split-local 是固定语义。
+- 不提供 `remap_nodes` 选项；split 只决定目标 PPI 对与训练节点集合，图本身为全图。
 
 ## SubgraphSampler
 
 ### 输入与安全性
 
-- `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None)` 的特征、节点和边必须来自同一 split。
+- `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None)` 的特征、节点和边必须来自同一张图（训练/验证/测试共用全图）。
 - `node_index` 必须严格递增，用于二分定位 global target 到 local 行号。
 - 目标边的两个方向在每个 target 采样前从安全邻接中排除。
-- 代理只能来自当前 split 的非目标节点；两个目标可以共享代理。
+- 代理只能来自当前图的非目标节点（全图即全部蛋白）；两个目标可以共享代理。
 
 ### G0 与轨迹
 
