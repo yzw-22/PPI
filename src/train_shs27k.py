@@ -19,7 +19,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 
 from .ppi_graph import PPIGraph
 from .predictor import PPIPredictor
-from .sampler import SubgraphSampler
+from .sampler import StaticNeighborhoodSampler, SubgraphSampler
 from .trainer import AlternatingTrainer
 
 
@@ -187,7 +187,10 @@ def run(args):
     test_targets = graph.ppi[test_indices]
     test_labels = graph.ppi_labels[test_indices]
 
-    sampler = SubgraphSampler(
+    sampler_class = (
+        SubgraphSampler if args.sampler == "rl" else StaticNeighborhoodSampler
+    )
+    sampler = sampler_class(
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
         max_steps=args.max_steps,
@@ -200,7 +203,11 @@ def run(args):
         heads=args.heads,
         dropout=args.dropout,
     ).to(device)
-    sampler_optimizer = torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
+    sampler_optimizer = (
+        torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
+        if args.sampler == "rl"
+        else None  # the static sampler has no parameters; its update is a no-op
+    )
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
     trainer = AlternatingTrainer(
         sampler,
@@ -359,6 +366,13 @@ def parse_args():
     parser.add_argument("--eval-batch-size", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument(
+        "--sampler", choices=["rl", "static"], default="rl",
+        help="rl: learned REINFORCE subgraph sampler (default); static: "
+             "non-learnable sampler that takes the whole safe k-hops "
+             "neighborhood of G0 (ablation for the effect of RL selection, "
+             "predictor-only training)",
+    )
     parser.add_argument(
         "--k-hops", type=int, default=1,
         help="maximum safe-adjacency distance from G0 seeds for sampler actions",

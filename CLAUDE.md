@@ -29,6 +29,9 @@
 - `G_0` 保留初始节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
 - 后续动作候选是当前 frontier，但只保留距 `G_0` 种子（`u`、`v`、proxy）不超过 `k_hops` 的安全节点；默认 `k_hops=1`。`max_steps` 只限制动作次数（默认 `10`），当前没有 STOP 动作或双目标平衡约束。
 - 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用贪心动作。
+- `StaticNeighborhoodSampler`（消融用、不可学习、零参数）：直接取 `G_0` 种子的
+  全部安全 `k_hops` 邻居（区域诱导子图），轨迹无动作、仅训练 Predictor；用于
+  检验 RL 选取的作用（static 图是任一 RL 轨迹图的信息上界）。
 - 动作 score 使用独立的 state/candidate 投影，拼接后映射回 hidden_dim 并加回
   投影 state（残差），再过 LN/Tanh 打分头：
   `Linear(2*hidden_dim→hidden_dim)（+state 残差）→ Linear(hidden_dim→hidden_dim//2)

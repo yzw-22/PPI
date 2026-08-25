@@ -16,6 +16,10 @@ class AlternatingTrainer:
                  reinforce_gamma=1.0):
         if not 0.0 <= reinforce_gamma <= 1.0:
             raise ValueError("reinforce_gamma must be in [0, 1]")
+        # ``sampler_optimizer`` may be None when the sampler has no parameters
+        # (e.g. the non-learnable ``StaticNeighborhoodSampler``): its update
+        # phase is a no-op because such trajectories carry no steps, so the
+        # optimizer is never stepped.
         self.sampler = sampler
         self.predictor = predictor
         self.sampler_optimizer = sampler_optimizer

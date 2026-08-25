@@ -2,7 +2,11 @@ import unittest
 
 import torch
 
-from src.sampler import _TargetSafeAdjacency, SubgraphSampler
+from src.sampler import (
+    StaticNeighborhoodSampler,
+    SubgraphSampler,
+    _TargetSafeAdjacency,
+)
 
 
 def global_edges(graph):
@@ -219,6 +223,117 @@ class SubgraphSamplerTest(unittest.TestCase):
         target = torch.tensor([0, 1])
         shared = SubgraphSampler._build_adjacency(edge_index, 5)
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=2)
+
+        standalone = sampler.sample(node_features, edge_index, target, training=False)
+        shared_trajectory = sampler.sample(
+            node_features, edge_index, target, training=False, adjacency=shared
+        )
+
+        self.assertEqual(
+            _trajectory_signature(shared_trajectory),
+            _trajectory_signature(standalone),
+        )
+
+
+class StaticNeighborhoodSamplerTest(unittest.TestCase):
+    def test_has_no_learnable_parameters_and_validates_k_hops(self):
+        sampler = StaticNeighborhoodSampler(esm_dim=2, hidden_dim=4, k_hops=1)
+
+        self.assertEqual(list(sampler.parameters()), [])
+        self.assertEqual(sampler.k_hops, 1)
+        with self.assertRaisesRegex(ValueError, "k_hops"):
+            StaticNeighborhoodSampler(esm_dim=2, k_hops=-1)
+
+    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+        node_features = torch.eye(5, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 1, 2, 3],
+            [1, 0, 2, 2, 3, 4],
+        ])
+        sampler = StaticNeighborhoodSampler(esm_dim=5, k_hops=1)
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(trajectory.steps, [])
+        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+
+    def test_graph_is_the_full_k_hop_region_with_induced_safe_edges(self):
+        # Undirected edges: 0-1 (target, removed), 0-2, 1-2, 2-3, 3-4.
+        # k=1 region of {0,1} is {0,1,2}; k=2 region is {0,1,2,3}.
+        node_features = torch.eye(5, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 1, 2, 3],
+            [1, 0, 2, 2, 3, 4],
+        ])
+        for k_hops, expected_nodes, expected_edges in (
+            (1, {0, 1, 2}, {(0, 2), (1, 2)}),
+            (2, {0, 1, 2, 3}, {(0, 2), (1, 2), (2, 3)}),
+        ):
+            sampler = StaticNeighborhoodSampler(esm_dim=5, k_hops=k_hops)
+            graph = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            ).final_graph
+
+            self.assertEqual(set(graph.node_index.tolist()), expected_nodes)
+            self.assertEqual(global_edges(graph), expected_edges)
+            self.assertNotIn((0, 1), global_edges(graph))
+
+    def test_isolated_target_takes_proxy_and_its_one_hop_region(self):
+        # The only edge 0-1 is the target; both targets prefer node 2 as proxy.
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [-1.0, 0.0],
+        ])
+        edge_index = torch.tensor([[0, 1], [1, 0]])
+        sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
+
+        graph = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        ).final_graph
+
+        self.assertEqual(graph.node_index.tolist(), [0, 1, 2])
+        self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
+        self.assertNotIn((0, 1), global_edges(graph))
+
+    def test_training_flag_does_not_change_the_static_graph(self):
+        node_features = torch.eye(4, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 2, 1, 3],
+            [1, 0, 2, 0, 2, 1, 3, 1],
+        ])
+        sampler = StaticNeighborhoodSampler(esm_dim=4, k_hops=1)
+
+        train_trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=True
+        )
+        eval_trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(
+            _trajectory_signature(train_trajectory),
+            _trajectory_signature(eval_trajectory),
+        )
+
+    def test_shared_adjacency_is_equivalent_to_standalone_build(self):
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ])
+        edge_index = torch.tensor([
+            [0, 1, 2, 3, 4],
+            [1, 2, 3, 4, 0],
+        ])
+        target = torch.tensor([0, 1])
+        shared = SubgraphSampler._build_adjacency(edge_index, 5)
+        sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
 
         standalone = sampler.sample(node_features, edge_index, target, training=False)
         shared_trajectory = sampler.sample(

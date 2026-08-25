@@ -26,6 +26,17 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 parse_args()
 
+    def test_sampler_defaults_to_rl_and_accepts_static(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            self.assertEqual(parse_args().sampler, "rl")
+        with patch.object(sys, "argv", ["train_shs27k", "--sampler", "static"]):
+            self.assertEqual(parse_args().sampler, "static")
+
+    def test_invalid_sampler_value_is_rejected(self):
+        with patch.object(sys, "argv", ["train_shs27k", "--sampler", "bogus"]):
+            with self.assertRaises(SystemExit):
+                parse_args()
+
 
 if __name__ == "__main__":
     unittest.main()

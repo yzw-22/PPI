@@ -405,3 +405,61 @@ class SubgraphSampler(nn.Module):
                 node_index[selected_tensor], selected_tensor, edge_index, target_nodes
             ))
         return graphs
+
+
+class StaticNeighborhoodSampler(SubgraphSampler):
+    """Non-learnable ablation sampler: G0 plus every safe k-hop neighbor.
+
+    Unlike :class:`SubgraphSampler`, no nodes are chosen by a learned policy:
+    the returned trajectory has no steps and its ``final_graph`` (equal to the
+    baseline graph) is the induced safe subgraph on the whole ``k_hops`` region
+    of the G0 seeds (``u``, ``v`` and any virtual proxies).  The trainer update
+    phase is then a no-op (the trajectory carries no steps) and only the
+    predictor is trained, exactly on the static neighborhood graph.
+
+    The node set and edge rule match the candidate space the RL sampler is
+    allowed to act in (the same ``_k_hop_region`` over the same safe
+    adjacency), so comparing the two isolates the effect of learned selection:
+    the static graph is a superset (information upper bound) of every RL
+    trajectory graph for the same target.
+    """
+
+    def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10, k_hops=1):
+        # Deliberately no action-scoring parameters: this sampler is
+        # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
+        # keep the constructor signature uniform with ``SubgraphSampler``.
+        if k_hops < 0:
+            raise ValueError("k_hops must be non-negative")
+        nn.Module.__init__(self)
+        self.esm_dim = esm_dim
+        self.hidden_dim = hidden_dim
+        self.max_steps = max_steps
+        self.k_hops = k_hops
+
+    def sample(self, node_features, edge_index, target_nodes, node_index=None,
+               training=None, adjacency=None):
+        """Return one deterministic static-neighborhood trajectory.
+
+        The ``training`` flag is ignored: the graph is always the full safe
+        ``k_hops`` region of the G0 seeds, so sampling is deterministic.
+        """
+        node_features, edge_index, node_index, target_local = self._prepare_inputs(
+            node_features, edge_index, target_nodes, node_index
+        )
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
+
+        u, v = target_local.tolist()
+        selected = [u, v]
+        graph_edges = set()
+        self._add_virtual_proxies(
+            selected, graph_edges, adjacency, node_features, target_local
+        )
+        allowed = self._k_hop_region(selected, adjacency, self.k_hops)
+        # Take the whole region (seeds first, remaining safe k-hop nodes in a
+        # deterministic order) and keep all safe edges induced by it.
+        selected = selected + sorted(allowed - set(selected))
+        self._add_real_edges(selected, graph_edges, adjacency)
+        graph = self._make_graph(selected, graph_edges, target_local, node_index)
+        return SamplingTrajectory(graph, [])

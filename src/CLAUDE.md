@@ -26,6 +26,11 @@
 - 从 `G_0` 的 target/proxy 种子沿安全 adjacency 构造一次 `k_hops` 区域，默认 `k_hops=1`；安全一跳邻居由初始 frontier 提供给后续 action。
 - 后续候选为该区域内的当前 frontier；`max_steps` 只限制动作次数，默认值为 `10`，无 STOP 动作。
 - `SamplingTrajectory.final_graph` 返回最后一步图；若没有动作则返回 `baseline_graph`。
+- `StaticNeighborhoodSampler`（消融用，不可学习，零参数）：`final_graph` =
+  `baseline_graph` = G0 种子（u、v、proxy）的全部安全 `k_hops` 区域诱导子图，
+  无动作；trainer 的 sampler 更新阶段因此为 no-op，只训练 Predictor。与 RL
+  Sampler 共享同一候选空间（`_k_hop_region` + 安全邻接），用于检验 RL 选取
+  的作用（static 图是任一 RL 轨迹图的信息上界）。
 
 ### Action score
 

@@ -3,7 +3,12 @@ import unittest
 import torch
 from torch import nn
 
-from src.sampler import SampledGraph, SamplingStep, SamplingTrajectory
+from src.sampler import (
+    SampledGraph,
+    SamplingStep,
+    SamplingTrajectory,
+    StaticNeighborhoodSampler,
+)
 from src.train_shs27k import _aggregate_train_metrics
 from src.trainer import AlternatingTrainer
 
@@ -137,6 +142,39 @@ class PredictorGraphSelectionTest(unittest.TestCase):
 
         self.assertEqual(len(trainer.seen_graphs), 1)
         self.assertEqual(trainer.seen_graphs[0].feature_index.tolist(), [0, 1, 2])
+
+
+class StaticSamplerTrainerIntegrationTest(unittest.TestCase):
+    def test_sampler_update_is_a_no_op_and_predictor_trains_on_the_static_graph(self):
+        # Edges: 0-1 (target, removed) and 0-2 (safe). The static 1-hop region
+        # of {0, 1} is {0, 1, 2}.
+        node_features = torch.zeros((3, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2],
+            [1, 0, 2, 0],
+        ])
+        sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
+        predictor = _RecordingPredictor()
+        trainer = _RecordingTrainer(
+            sampler,
+            predictor,
+            None,  # the static sampler has no parameters
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+        )
+
+        sampler_metrics = trainer.sampler_batch_step(
+            node_features, edge_index, torch.tensor([[0, 1]]), torch.zeros((1, 7))
+        )
+        self.assertEqual(sampler_metrics["sampler_step_count"], 0)
+        self.assertEqual(float(sampler_metrics["sampler_loss"]), 0.0)
+
+        trainer.predictor_batch_step(
+            node_features, edge_index, torch.tensor([[0, 1]]), torch.zeros((1, 7))
+        )
+        self.assertEqual(len(trainer.seen_graphs), 1)
+        self.assertEqual(
+            sorted(trainer.seen_graphs[0].feature_index.tolist()), [0, 1, 2]
+        )
 
 
 class SamplerMetricAggregationTest(unittest.TestCase):
