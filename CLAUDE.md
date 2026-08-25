@@ -84,6 +84,13 @@ python -m src.train_shs27k \
 
 详见 [docs/README.md](docs/README.md)（docs 唯一报告，含性能优化方向与历史实验记录）。当前优先级为：缓存投影结果、增量维护状态和减少 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier（全图下收益更大）。
 
+## 提交约定
+
+- **只运行实验、不修改代码时，不单独提交**：实验记录（`docs/README.md` 更新、
+  结果 JSON 等）保留在工作区未提交状态；
+- 直到下一次**代码修改**发生时，才连同累积的实验记录一并提交（可沿用
+  src / docs 分组提交风格，但实验记录不单独成一次提交）。
+
 ## 验证
 
 ```bash
