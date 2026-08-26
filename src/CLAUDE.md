@@ -31,6 +31,10 @@
   无动作；trainer 的 sampler 更新阶段因此为 no-op，只训练 Predictor。与 RL
   Sampler 共享同一候选空间（`_k_hop_region` + 安全邻接），用于检验 RL 选取
   的作用（static 图是任一 RL 轨迹图的信息上界）。
+- `RandomSubsetSampler`（消融用，不可学习，零参数）：从 `k_hops` 区域均匀随机
+  取 `min_size`~`max_size`（恒含 u/v）个节点的诱导子图，无动作；与 RL 同规模
+  对比，用于分离"上下文量"与"选取策略"（random-subset 模式由
+  `--sampler random-subset` 开启，规模由 `--random-subset-min/max-size` 控制）。
 
 ### Action score
 

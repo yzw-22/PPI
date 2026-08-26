@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from src.sampler import (
+    RandomSubsetSampler,
     StaticNeighborhoodSampler,
     SubgraphSampler,
     _TargetSafeAdjacency,
@@ -336,6 +337,148 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
         sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
 
         standalone = sampler.sample(node_features, edge_index, target, training=False)
+        shared_trajectory = sampler.sample(
+            node_features, edge_index, target, training=False, adjacency=shared
+        )
+
+        self.assertEqual(
+            _trajectory_signature(shared_trajectory),
+            _trajectory_signature(standalone),
+        )
+
+
+class RandomSubsetSamplerTest(unittest.TestCase):
+    def test_has_no_learnable_parameters_and_validates_size_range(self):
+        sampler = RandomSubsetSampler(esm_dim=2, k_hops=1, min_size=3, max_size=5)
+
+        self.assertEqual(list(sampler.parameters()), [])
+        self.assertEqual((sampler.min_size, sampler.max_size), (3, 5))
+        with self.assertRaisesRegex(ValueError, "k_hops"):
+            RandomSubsetSampler(esm_dim=2, k_hops=-1)
+        with self.assertRaisesRegex(ValueError, "min_size"):
+            RandomSubsetSampler(esm_dim=2, min_size=1)
+        with self.assertRaisesRegex(ValueError, "max_size"):
+            RandomSubsetSampler(esm_dim=2, min_size=5, max_size=3)
+
+    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+        node_features = torch.eye(8, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
+            [1, 0, 2, 0, 3, 0, 4, 0, 5, 1, 6, 1, 7, 1],
+        ])
+        sampler = RandomSubsetSampler(esm_dim=8, k_hops=1, min_size=3, max_size=5)
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(trajectory.steps, [])
+        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+
+    def test_graph_always_contains_targets_within_the_region_and_size_range(self):
+        # Region of {0, 1} is {0..7}: candidates 2..7 give sizes 3..5 room.
+        node_features = torch.eye(8, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
+            [1, 0, 2, 0, 3, 0, 4, 0, 5, 1, 6, 1, 7, 1],
+        ])
+        sampler = RandomSubsetSampler(esm_dim=8, k_hops=1, min_size=3, max_size=5)
+
+        sizes = set()
+        for seed in range(100):
+            torch.manual_seed(seed)
+            graph = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            ).final_graph
+            nodes = set(graph.node_index.tolist())
+            self.assertLessEqual(nodes, {0, 1, 2, 3, 4, 5, 6, 7})
+            self.assertIn(0, nodes)
+            self.assertIn(1, nodes)
+            self.assertNotIn((0, 1), global_edges(graph))
+            sizes.add(len(nodes))
+        self.assertTrue(sizes <= {3, 4, 5})
+        self.assertGreater(len(sizes), 1)  # the size draw is not constant
+
+    def test_edges_are_the_induced_safe_edges_of_the_drawn_nodes(self):
+        # Safe edges: 0-2, 0-3, 0-4, 1-5, 1-6, 1-7 (0-1 is the target edge).
+        node_features = torch.eye(8, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
+            [1, 0, 2, 0, 3, 0, 4, 0, 5, 1, 6, 1, 7, 1],
+        ])
+        safe_edges = {(0, 2), (0, 3), (0, 4), (1, 5), (1, 6), (1, 7)}
+        sampler = RandomSubsetSampler(esm_dim=8, k_hops=1, min_size=3, max_size=5)
+
+        torch.manual_seed(7)
+        graph = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        ).final_graph
+        nodes = set(graph.node_index.tolist())
+        expected = {tuple(sorted(edge)) for edge in safe_edges
+                    if set(edge) <= nodes}
+        self.assertEqual(global_edges(graph), expected)
+
+    def test_exhausted_region_takes_all_candidates(self):
+        # Region of {0, 1} is {0, 1, 2}; sizes above the region size clamp to
+        # all candidates, like early frontier exhaustion in RL.
+        node_features = torch.eye(5, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 1, 2, 3],
+            [1, 0, 2, 2, 3, 4],
+        ])
+        sampler = RandomSubsetSampler(esm_dim=5, k_hops=1, min_size=3, max_size=5)
+
+        for seed in range(10):
+            torch.manual_seed(seed)
+            graph = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            ).final_graph
+
+            self.assertEqual(set(graph.node_index.tolist()), {0, 1, 2})
+            self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
+            self.assertNotIn((0, 1), global_edges(graph))
+
+    def test_training_flag_does_not_change_the_graph_under_the_same_seed(self):
+        node_features = torch.eye(8, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
+            [1, 0, 2, 0, 3, 0, 4, 0, 5, 1, 6, 1, 7, 1],
+        ])
+        sampler = RandomSubsetSampler(esm_dim=8, k_hops=1, min_size=3, max_size=5)
+
+        torch.manual_seed(3)
+        train_trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=True
+        )
+        torch.manual_seed(3)
+        eval_trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(
+            _trajectory_signature(train_trajectory),
+            _trajectory_signature(eval_trajectory),
+        )
+
+    def test_shared_adjacency_is_equivalent_to_standalone_build(self):
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ])
+        edge_index = torch.tensor([
+            [0, 1, 2, 3, 4],
+            [1, 2, 3, 4, 0],
+        ])
+        target = torch.tensor([0, 1])
+        shared = SubgraphSampler._build_adjacency(edge_index, 5)
+        sampler = RandomSubsetSampler(esm_dim=2, k_hops=1, min_size=3, max_size=4)
+
+        torch.manual_seed(11)
+        standalone = sampler.sample(node_features, edge_index, target, training=False)
+        torch.manual_seed(11)
         shared_trajectory = sampler.sample(
             node_features, edge_index, target, training=False, adjacency=shared
         )

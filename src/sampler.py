@@ -463,3 +463,72 @@ class StaticNeighborhoodSampler(SubgraphSampler):
         self._add_real_edges(selected, graph_edges, adjacency)
         graph = self._make_graph(selected, graph_edges, target_local, node_index)
         return SamplingTrajectory(graph, [])
+
+
+class RandomSubsetSampler(SubgraphSampler):
+    """Non-learnable ablation sampler: a random subset of the k-hop region.
+
+    Like :class:`StaticNeighborhoodSampler` this sampler has no parameters and
+    returns a trajectory without steps, so the trainer only updates the
+    predictor.  The node set is a uniformly random subset of the safe
+    ``k_hops`` region with the same size budget as RL trajectories: the two
+    target seeds are always included and ``min_size``..``max_size`` bound the
+    final node count (when the region holds fewer candidates all of them are
+    taken, mirroring early frontier exhaustion in RL).
+
+    Comparing this sampler with the learned one at the same graph size
+    separates the effect of the selection *strategy* from the effect of
+    *context amount* (the static sampler is the full-region reference).
+    """
+
+    def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10, k_hops=1,
+                 min_size=3, max_size=7):
+        # Deliberately no action-scoring parameters: this sampler is
+        # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
+        # keep the constructor signature uniform with ``SubgraphSampler``.
+        if k_hops < 0:
+            raise ValueError("k_hops must be non-negative")
+        if min_size < 2:
+            raise ValueError("min_size must be at least 2")
+        if max_size < min_size:
+            raise ValueError("max_size must be at least min_size")
+        nn.Module.__init__(self)
+        self.esm_dim = esm_dim
+        self.hidden_dim = hidden_dim
+        self.max_steps = max_steps
+        self.k_hops = k_hops
+        self.min_size = min_size
+        self.max_size = max_size
+
+    def sample(self, node_features, edge_index, target_nodes, node_index=None,
+               training=None, adjacency=None):
+        """Return one random-subset trajectory (deterministic under the seed).
+
+        The ``training`` flag is ignored: the target size is drawn uniformly
+        from ``[min_size, max_size]`` and the subset uniformly without
+        replacement, both from the global RNG (seeded by the training entry),
+        so results are reproducible per process seed.
+        """
+        node_features, edge_index, node_index, target_local = self._prepare_inputs(
+            node_features, edge_index, target_nodes, node_index
+        )
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
+
+        u, v = target_local.tolist()
+        selected = [u, v]
+        graph_edges = set()
+        self._add_virtual_proxies(
+            selected, graph_edges, adjacency, node_features, target_local
+        )
+        allowed = self._k_hop_region(selected, adjacency, self.k_hops)
+        candidates = sorted(allowed - set(selected))
+        if candidates:
+            target_size = int(torch.randint(self.min_size, self.max_size + 1, ()))
+            k_extra = min(target_size - len(selected), len(candidates))
+            chosen = torch.randperm(len(candidates))[:k_extra].tolist()
+            selected = selected + [candidates[index] for index in chosen]
+        self._add_real_edges(selected, graph_edges, adjacency)
+        graph = self._make_graph(selected, graph_edges, target_local, node_index)
+        return SamplingTrajectory(graph, [])

@@ -19,7 +19,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 
 from .ppi_graph import PPIGraph
 from .predictor import PPIPredictor
-from .sampler import StaticNeighborhoodSampler, SubgraphSampler
+from .sampler import RandomSubsetSampler, StaticNeighborhoodSampler, SubgraphSampler
 from .trainer import AlternatingTrainer
 
 
@@ -150,6 +150,7 @@ def _aggregate_train_metrics(batch_records):
             reward_total / sampler_step_count
             if sampler_step_count else 0.0
         ),
+        "sampler_step_count": sampler_step_count,
     }
 
 
@@ -187,15 +188,29 @@ def run(args):
     test_targets = graph.ppi[test_indices]
     test_labels = graph.ppi_labels[test_indices]
 
-    sampler_class = (
-        SubgraphSampler if args.sampler == "rl" else StaticNeighborhoodSampler
-    )
-    sampler = sampler_class(
-        esm_dim=esm_dim,
-        hidden_dim=args.hidden_dim,
-        max_steps=args.max_steps,
-        k_hops=args.k_hops,
-    ).to(device)
+    if args.sampler == "rl":
+        sampler = SubgraphSampler(
+            esm_dim=esm_dim,
+            hidden_dim=args.hidden_dim,
+            max_steps=args.max_steps,
+            k_hops=args.k_hops,
+        ).to(device)
+    elif args.sampler == "static":
+        sampler = StaticNeighborhoodSampler(
+            esm_dim=esm_dim,
+            hidden_dim=args.hidden_dim,
+            max_steps=args.max_steps,
+            k_hops=args.k_hops,
+        ).to(device)
+    else:
+        sampler = RandomSubsetSampler(
+            esm_dim=esm_dim,
+            hidden_dim=args.hidden_dim,
+            max_steps=args.max_steps,
+            k_hops=args.k_hops,
+            min_size=args.random_subset_min_size,
+            max_size=args.random_subset_max_size,
+        ).to(device)
     predictor = PPIPredictor(
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
@@ -367,11 +382,23 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument(
-        "--sampler", choices=["rl", "static"], default="rl",
+        "--sampler", choices=["rl", "static", "random-subset"], default="rl",
         help="rl: learned REINFORCE subgraph sampler (default); static: "
              "non-learnable sampler that takes the whole safe k-hops "
              "neighborhood of G0 (ablation for the effect of RL selection, "
-             "predictor-only training)",
+             "predictor-only training); random-subset: non-learnable sampler "
+             "that takes a uniformly random subset of the k-hops region with "
+             "an RL-sized node budget (separates selection strategy from "
+             "context amount)",
+    )
+    parser.add_argument(
+        "--random-subset-min-size", type=int, default=3,
+        help="minimum final node count for --sampler random-subset "
+             "(targets are always included)",
+    )
+    parser.add_argument(
+        "--random-subset-max-size", type=int, default=7,
+        help="maximum final node count for --sampler random-subset",
     )
     parser.add_argument(
         "--k-hops", type=int, default=1,
@@ -393,6 +420,10 @@ def parse_args():
         )
     if args.k_hops < 0:
         parser.error("k-hops must be non-negative")
+    if args.random_subset_min_size < 2:
+        parser.error("random-subset-min-size must be at least 2")
+    if args.random_subset_max_size < args.random_subset_min_size:
+        parser.error("random-subset-max-size must be >= random-subset-min-size")
     return args
 
 

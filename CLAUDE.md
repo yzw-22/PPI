@@ -32,6 +32,10 @@
 - `StaticNeighborhoodSampler`（消融用、不可学习、零参数）：直接取 `G_0` 种子的
   全部安全 `k_hops` 邻居（区域诱导子图），轨迹无动作、仅训练 Predictor；用于
   检验 RL 选取的作用（static 图是任一 RL 轨迹图的信息上界）。
+- `RandomSubsetSampler`（消融用、不可学习、零参数）：从 `k_hops` 区域均匀随机
+  取与 RL 同规模（`min_size`~`max_size`，恒含 u/v）的节点子集 + 诱导边，轨迹
+  无动作、仅训练 Predictor；与 RL 同规模对比，用于分离"上下文量"与"选取
+  策略"。
 - 动作 score 使用独立的 state/candidate 投影，拼接后映射回 hidden_dim 并加回
   投影 state（残差），再过 LN/Tanh 打分头：
   `Linear(2*hidden_dim→hidden_dim)（+state 残差）→ Linear(hidden_dim→hidden_dim//2)

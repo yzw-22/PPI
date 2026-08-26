@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from src.sampler import (
+    RandomSubsetSampler,
     SampledGraph,
     SamplingStep,
     SamplingTrajectory,
@@ -159,6 +160,40 @@ class StaticSamplerTrainerIntegrationTest(unittest.TestCase):
             sampler,
             predictor,
             None,  # the static sampler has no parameters
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+        )
+
+        sampler_metrics = trainer.sampler_batch_step(
+            node_features, edge_index, torch.tensor([[0, 1]]), torch.zeros((1, 7))
+        )
+        self.assertEqual(sampler_metrics["sampler_step_count"], 0)
+        self.assertEqual(float(sampler_metrics["sampler_loss"]), 0.0)
+
+        trainer.predictor_batch_step(
+            node_features, edge_index, torch.tensor([[0, 1]]), torch.zeros((1, 7))
+        )
+        self.assertEqual(len(trainer.seen_graphs), 1)
+        self.assertEqual(
+            sorted(trainer.seen_graphs[0].feature_index.tolist()), [0, 1, 2]
+        )
+
+
+class RandomSubsetSamplerTrainerIntegrationTest(unittest.TestCase):
+    def test_sampler_update_is_a_no_op_and_predictor_trains_on_the_random_graph(self):
+        # Edges: 0-1 (target, removed) and 0-2 (safe). The region of {0, 1} is
+        # {0, 1, 2}; with min_size 3..4 the random subset always takes all of it.
+        node_features = torch.zeros((3, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2],
+            [1, 0, 2, 0],
+        ])
+        torch.manual_seed(0)
+        sampler = RandomSubsetSampler(esm_dim=2, k_hops=1, min_size=3, max_size=4)
+        predictor = _RecordingPredictor()
+        trainer = _RecordingTrainer(
+            sampler,
+            predictor,
+            None,  # the random-subset sampler has no parameters
             torch.optim.SGD(predictor.parameters(), lr=0.1),
         )
 
