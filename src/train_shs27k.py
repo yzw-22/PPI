@@ -99,9 +99,11 @@ def evaluate(trainer, node_features, graph, targets, labels, batch_size,
     labels = labels.cpu().numpy()
     metrics = _metrics(labels, probabilities)
 
-    training_nodes = set(training_node_index.detach().cpu().tolist())
+    # Both tensors are integer indices (never require grad), so ``.detach()``
+    # would be a no-op here.
+    training_nodes = set(training_node_index.cpu().tolist())
     groups = {"BS": [], "ES": [], "NS": []}
-    for sample_index, (source, target) in enumerate(targets.detach().cpu().tolist()):
+    for sample_index, (source, target) in enumerate(targets.cpu().tolist()):
         source_seen = source in training_nodes
         target_seen = target in training_nodes
         group = "BS" if source_seen and target_seen else (

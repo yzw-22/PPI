@@ -25,9 +25,6 @@ class _TargetSafeAdjacency:
         self.source_neighbors = base[self.source] - {self.target}
         self.target_neighbors = base[self.target] - {self.source}
 
-    def __len__(self):
-        return len(self.base)
-
     def __getitem__(self, index):
         if index == self.source:
             return self.source_neighbors
@@ -207,7 +204,8 @@ class SubgraphSampler(nn.Module):
             self._add_action_edges(action_int, selected, graph_edges, adjacency)
             selected.append(action_int)
             selected_set.add(action_int)
-            frontier.discard(action_int)
+            # No ``discard`` needed: the difference_update below removes every
+            # selected node (including ``action_int``) from the frontier.
             frontier.update(
                 neighbor for neighbor in adjacency[action_int]
                 if neighbor in allowed_nodes
@@ -427,13 +425,12 @@ class StaticNeighborhoodSampler(SubgraphSampler):
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10, k_hops=1):
         # Deliberately no action-scoring parameters: this sampler is
         # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
-        # keep the constructor signature uniform with ``SubgraphSampler``.
+        # keep the constructor signature uniform with ``SubgraphSampler`` (the
+        # values are not stored: this sampler never scores actions).
         if k_hops < 0:
             raise ValueError("k_hops must be non-negative")
         nn.Module.__init__(self)
         self.esm_dim = esm_dim
-        self.hidden_dim = hidden_dim
-        self.max_steps = max_steps
         self.k_hops = k_hops
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
@@ -485,7 +482,8 @@ class RandomSubsetSampler(SubgraphSampler):
                  min_size=3, max_size=7):
         # Deliberately no action-scoring parameters: this sampler is
         # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
-        # keep the constructor signature uniform with ``SubgraphSampler``.
+        # keep the constructor signature uniform with ``SubgraphSampler`` (the
+        # values are not stored: this sampler never scores actions).
         if k_hops < 0:
             raise ValueError("k_hops must be non-negative")
         if min_size < 2:
@@ -494,8 +492,6 @@ class RandomSubsetSampler(SubgraphSampler):
             raise ValueError("max_size must be at least min_size")
         nn.Module.__init__(self)
         self.esm_dim = esm_dim
-        self.hidden_dim = hidden_dim
-        self.max_steps = max_steps
         self.k_hops = k_hops
         self.min_size = min_size
         self.max_size = max_size
