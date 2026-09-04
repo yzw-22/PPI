@@ -6,7 +6,9 @@
 - `build_graph(split_name="train", undirected=True)` 构建 split-local 图，并保留公共 `edge_label` 字段。
 - `build_full_graph(undirected=True)` 构建**全数据集全图**（全部蛋白节点 + 全部 PPI 边），训练入口以它作为训练/验证/测试共用的采样 KG。
 - `edge_index` 是局部节点索引；`node_index` 是 local → global 映射；`node_feat` 是节点 embedding。
-- 支持组合：SHS27k 的 `bfs/dfs/random`，SHS148k 的 `dfs/random`，STRING 的 `dfs`。
+- 支持组合：SHS27k 的 `bfs/dfs/random`，SHS148k 的 `dfs/random`（bfs 由
+  `--root dataset_ppisplit` 提供，默认 `dataset/` 无此文件），STRING 的 `dfs`；
+  缺失的 split 文件在参数解析阶段报错。
 - 不提供 `remap_nodes` 选项；split 只决定目标 PPI 对与训练节点集合，图本身为全图。
 
 ## SubgraphSampler

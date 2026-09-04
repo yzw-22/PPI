@@ -620,7 +620,9 @@ class RandomSubsetSampler(SubgraphSampler):
     ``k_hops`` region with the same size budget as RL trajectories: the two
     target seeds are always included and ``min_size``..``max_size`` bound the
     final node count (when the region holds fewer candidates all of them are
-    taken, mirroring early frontier exhaustion in RL).
+    taken, mirroring early frontier exhaustion in RL).  Mandatory virtual
+    proxies can push the final count above ``min_size`` (both targets
+    isolated); it never exceeds ``max_size``.
 
     Comparing this sampler with the learned one at the same graph size
     separates the effect of the selection *strategy* from the effect of
@@ -671,7 +673,11 @@ class RandomSubsetSampler(SubgraphSampler):
         candidates = sorted(allowed - set(selected))
         if candidates:
             target_size = int(torch.randint(self.min_size, self.max_size + 1, ()))
-            k_extra = min(target_size - len(selected), len(candidates))
+            # Mandatory virtual proxies can push ``len(selected)`` above
+            # ``min_size`` (both targets isolated), so the extra budget is
+            # clamped at zero; a negative slice would keep n-1 candidates
+            # instead of none.
+            k_extra = max(0, min(target_size - len(selected), len(candidates)))
             chosen = torch.randperm(len(candidates))[:k_extra].tolist()
             selected = selected + [candidates[index] for index in chosen]
         self._add_real_edges(selected, graph_edges, adjacency)

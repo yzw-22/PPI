@@ -1,5 +1,7 @@
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -103,6 +105,26 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 parse_args()
+
+    def test_missing_split_file_is_rejected_at_parse_time(self):
+        # bfs is a valid SHS148k split (served by --root dataset_ppisplit), so
+        # availability passes but a missing split file must fail cleanly here
+        # instead of raising FileNotFoundError during graph loading.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "SHS148k_bfs.json").write_text('{"train_index": []}')
+            with patch.object(
+                sys, "argv",
+                ["train_shs27k", "--root", tmp,
+                 "--dataset", "SHS148k", "--split", "bfs"],
+            ):
+                self.assertEqual(parse_args().split, "bfs")
+            with patch.object(
+                sys, "argv",
+                ["train_shs27k", "--root", tmp,
+                 "--dataset", "SHS148k", "--split", "dfs"],
+            ):
+                with self.assertRaises(SystemExit):
+                    parse_args()
 
 
 if __name__ == "__main__":

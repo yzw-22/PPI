@@ -749,5 +749,39 @@ class RandomSubsetSamplerTest(unittest.TestCase):
         )
 
 
+class RandomSubsetSamplerTwoIsolatedTargetsTest(unittest.TestCase):
+    def test_two_isolated_targets_never_exceed_max_size(self):
+        # Both targets are isolated, so each takes a distinct proxy and
+        # len(selected) = 4 exceeds min_size = 3. When the drawn target size
+        # is 3 the extra budget must clamp to zero; a negative slice would
+        # keep n-1 candidates and blow past max_size.
+        node_features = torch.zeros(10, 2)
+        node_features[0] = torch.tensor([1.0, 0.3])
+        node_features[2] = torch.tensor([1.0, 0.0])   # proxy for target 0
+        node_features[1] = torch.tensor([-1.0, 0.3])
+        node_features[3] = torch.tensor([-1.0, 0.0])  # proxy for target 1
+        edge_index = torch.tensor([
+            [0, 1, 2, 4, 2, 5, 2, 6, 3, 7, 3, 8, 3, 9],
+            [1, 0, 4, 2, 5, 2, 6, 2, 7, 3, 8, 3, 9, 3],
+        ])
+        sampler = RandomSubsetSampler(esm_dim=2, k_hops=1, min_size=3, max_size=7)
+
+        sizes = set()
+        for seed in range(50):
+            torch.manual_seed(seed)
+            graph = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            ).final_graph
+            nodes = set(graph.node_index.tolist())
+            self.assertIn(0, nodes)
+            self.assertIn(1, nodes)
+            self.assertIn(2, nodes)  # both proxies are mandatory seeds
+            self.assertIn(3, nodes)
+            self.assertNotIn((0, 1), global_edges(graph))
+            sizes.add(len(nodes))
+        self.assertTrue(max(sizes) <= 7)
+        self.assertTrue(max(sizes) > 4)  # a size-3 draw must still add nodes
+
+
 if __name__ == "__main__":
     unittest.main()

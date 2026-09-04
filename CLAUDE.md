@@ -18,7 +18,9 @@
   split-local 构建保留，仅用于训练节点集合查询（测试 BS/ES/NS 分组）与外部使用。
 - `edge_index` 使用局部节点索引，`node_index` 保存 local → global 映射，`node_feat` 与局部节点逐行对应。
 - `edge_label` 是公共返回字段，保存每条 PPI 边的 7 维 multi-hot 标签。
-- SHS27k 支持 `bfs/dfs/random`，SHS148k 支持 `dfs/random`，STRING 支持 `dfs`；非法组合在参数解析阶段报错。
+- SHS27k 支持 `bfs/dfs/random`，SHS148k 支持 `dfs/random`（bfs 需
+  `--root dataset_ppisplit`，默认 `dataset/` 不提供该文件），STRING 支持
+  `dfs`；非法组合与缺失的 split 文件都在参数解析阶段报错。
 - split 只决定各阶段的目标 PPI 对与训练节点集合；Sampler、代理候选、frontier 和 Predictor 输入全部使用全图的节点与边。
 - 每次采样前从安全邻接中移除目标边 `(u,v)` 和 `(v,u)`，避免标签泄漏。
 - `--use-edge-relations` 可选开启 relation-aware GAT：只有 train split 边携带

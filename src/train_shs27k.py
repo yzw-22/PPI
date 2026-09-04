@@ -2,8 +2,11 @@
 
 Supports the SHS27k / SHS148k / STRING datasets via ``--dataset`` and their
 available bfs / dfs / random splits via ``--split`` (the valid split choices
-depend on the dataset; see ``PPIGraph.AVAILABLE_SPLITS``). Dataset files are
-assumed to exist under ``--root`` and are not pre-checked.
+depend on the dataset; see ``PPIGraph.AVAILABLE_SPLITS``). The split file
+``{root}/{dataset}_{split}.json`` is checked at argument-parse time; the
+remaining dataset files are assumed to exist under ``--root`` and are not
+pre-checked. Note that bfs is only shipped for SHS27k under the default
+``dataset`` root (SHS148k bfs lives under ``dataset_ppisplit``).
 """
 
 import argparse
@@ -462,6 +465,13 @@ def parse_args():
             f"split {args.split!r} is not available for dataset "
             f"{args.dataset!r}; expected one of "
             f"{PPIGraph.AVAILABLE_SPLITS[args.dataset]}"
+        )
+    split_path = Path(args.root) / f"{args.dataset}_{args.split}.json"
+    if not split_path.is_file():
+        parser.error(
+            f"split file {split_path} does not exist; check --root together "
+            f"with --dataset/--split (e.g. SHS148k bfs is only provided by "
+            f"--root dataset_ppisplit)"
         )
     if args.k_hops < 0:
         parser.error("k-hops must be non-negative")
