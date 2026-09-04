@@ -4,6 +4,7 @@ Each target pair produces an independent variable-size trajectory; the trainer
 combines the resulting graphs for batched predictor computation.
 """
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -138,10 +139,29 @@ class SubgraphSampler(nn.Module):
     The baseline graph contains only the target pair and any required virtual
     proxy. Candidate expansions are restricted to their safe ``k_hops``
     neighborhood.
+
+    With ``structural_features=True`` the action score additionally receives
+    an 8-D topology block per candidate (common-neighbor, target-touching,
+    degree, selected-connectivity, target distances, Adamic-Adar), injected
+    through a zero-initialized projection plus a linear skip channel that is
+    initialized to the ``HeuristicSampler`` ranking (see
+    ``STRUCTURAL_PRIOR``): greedy evaluation starts at the heuristic policy
+    and REINFORCE refines both paths from there.
     """
 
+    #: Width of the structural candidate-feature block; the column layout is
+    #: documented on :meth:`_topo_features`.
+    STRUCTURAL_FEATURES = 8
+    #: Heuristic prior for the structural skip channel ``scores += w·φ_topo``.
+    #: (8, 4, 1, 0, …) reproduces the ``HeuristicSampler`` ranking under
+    #: greedy argmax — common neighbors score 8 + 2·4, single-target neighbors
+    #: 4, the rest only their degree column — while softmax sampling keeps an
+    #: e^-8 exploration floor.  The vector stays trainable: REINFORCE starts
+    #: at the heuristic and refines from there.
+    STRUCTURAL_PRIOR = (8.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 k_hops=1, relation_dim=None):
+                 k_hops=1, relation_dim=None, structural_features=False):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
@@ -154,6 +174,10 @@ class SubgraphSampler(nn.Module):
         self.max_steps = max_steps
         self.k_hops = k_hops
         self.relation_dim = relation_dim
+        self.structural_features = structural_features
+        # Shared-adjacency degree-scale cache for the structural features;
+        # populated on first use (see ``_degree_scale``).
+        self._degree_cache = None
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.
         self.state_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
@@ -184,6 +208,19 @@ class SubgraphSampler(nn.Module):
                     relation_dim, hidden_dim, bias=False
                 )
                 nn.init.xavier_uniform_(self.relation_proj.weight)
+        if structural_features:
+            # Zero-initialized projection: the learned structural path starts
+            # as a no-op, so the prior-initialized skip below alone defines
+            # the initial policy.  The constructor runs under fork_rng and
+            # zeros_ consumes no RNG, keeping seeded runs paired with the
+            # flag off (same property as the relation branch).
+            with torch.random.fork_rng(devices=[]):
+                self.struct_proj = nn.Linear(self.STRUCTURAL_FEATURES, hidden_dim)
+            nn.init.zeros_(self.struct_proj.weight)
+            nn.init.zeros_(self.struct_proj.bias)
+            self.struct_prior = nn.Parameter(
+                torch.tensor(self.STRUCTURAL_PRIOR)
+            )
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
                training=None, adjacency=None, edge_relations=None):
@@ -238,6 +275,27 @@ class SubgraphSampler(nn.Module):
         )
         allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
 
+        # Structural features: distances to each target are fixed for the
+        # whole trajectory (the safe adjacency never changes), so the two
+        # bounded BFS runs happen once; only the selected-connectivity column
+        # is recomputed per step.
+        dist_u = dist_v = None
+        log_dmax = None
+        if self.structural_features:
+            base_adjacency = (
+                adjacency.base
+                if isinstance(adjacency, _TargetSafeAdjacency)
+                else adjacency
+            )
+            log_dmax = self._degree_scale(base_adjacency)
+            distance_cap = 2 * self.k_hops
+            dist_u = self._bounded_distances(
+                u, allowed_nodes, adjacency, distance_cap
+            )
+            dist_v = self._bounded_distances(
+                v, allowed_nodes, adjacency, distance_cap
+            )
+
         # ``allowed_nodes`` is computed once per trajectory. The frontier is
         # then maintained incrementally without repeating the k-hop traversal.
         selected_set = set(selected)
@@ -279,6 +337,18 @@ class SubgraphSampler(nn.Module):
                 candidate_repr = (
                     candidate_repr + self.relation_proj(candidate_relations)
                 )
+            topo = None
+            if self.structural_features:
+                topo = self._topo_features(
+                    candidates, u, v, selected_set, adjacency,
+                    dist_u, dist_v, self.k_hops, log_dmax,
+                )
+                candidate_repr = candidate_repr + self.struct_proj(
+                    topo.to(
+                        device=candidate_repr.device,
+                        dtype=self.struct_proj.weight.dtype,
+                    )
+                )
             state_repr = state_repr.expand(candidate_repr.shape[0], -1)
             attention_input = torch.cat((state_repr, candidate_repr), dim=-1)
             # Residual-style pair mixing: map the concatenated pair back to
@@ -286,6 +356,13 @@ class SubgraphSampler(nn.Module):
             mapped = self.pair_proj(attention_input)
             h = mapped + state_repr
             scores = self.fc(h).squeeze(-1)
+            if self.structural_features:
+                # Heuristic-prior skip channel; ``struct_prior`` stays
+                # trainable so REINFORCE refines the ranking from the
+                # heuristic initialization.
+                scores = scores + topo.to(scores.dtype) @ self.struct_prior.to(
+                    device=scores.device, dtype=scores.dtype
+                )
             probs = torch.softmax(scores, dim=0)
             if training:
                 choice = torch.distributions.Categorical(probs).sample()
@@ -354,13 +431,92 @@ class SubgraphSampler(nn.Module):
                 result[candidate_index] = values[positions].amax(dim=0)
         return result
 
-    def forward(self, node_features, edge_index, target_nodes, node_index=None,
-                training=None, adjacency=None, edge_relations=None):
-        """Alias :meth:`sample` so the sampler follows the PyTorch module API."""
-        return self.sample(
-            node_features, edge_index, target_nodes, node_index, training,
-            adjacency, edge_relations,
-        )
+    def _degree_scale(self, base_adjacency):
+        """Return ``log1p(max degree)`` of the shared base adjacency.
+
+        Cached per adjacency object; holding the reference keeps the identity
+        (and therefore the cache hit) stable for the lifetime of the graph, so
+        the training entry's shared adjacency is scanned exactly once.
+        """
+        cached = self._degree_cache
+        if cached is not None and cached[0] is base_adjacency:
+            return cached[1]
+        if len(base_adjacency):
+            log_dmax = math.log1p(max(len(n) for n in base_adjacency))
+        else:
+            log_dmax = 1.0
+        self._degree_cache = (base_adjacency, log_dmax)
+        return log_dmax
+
+    @staticmethod
+    def _bounded_distances(source, region, adjacency, max_depth):
+        """Hop distances from ``source`` to region nodes within ``max_depth``.
+
+        The BFS never leaves ``region``; nodes farther away (or unreachable)
+        are simply absent and mapped to the cap by the feature builder.
+        """
+        distances = {source: 0}
+        frontier = [source]
+        for depth in range(1, max_depth + 1):
+            next_frontier = []
+            for node in frontier:
+                for neighbor in adjacency[node]:
+                    if neighbor in region and neighbor not in distances:
+                        distances[neighbor] = depth
+                        next_frontier.append(neighbor)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return distances
+
+    @staticmethod
+    def _topo_features(candidates, u, v, selected, adjacency, dist_u, dist_v,
+                       k_hops, log_dmax):
+        """Deterministic topology features for one scoring step.
+
+        Column layout matches ``STRUCTURAL_PRIOR``:
+
+        .. code-block:: text
+
+            0  common-neighbor indicator  1[c ∈ 𝒜_u ∩ 𝒜_v]
+            1  target-touching count      𝟙[c ∈ 𝒜_u] + 𝟙[c ∈ 𝒜_v]
+            2  normalized safe degree     log1p(|𝒜_c|) / log1p(d_max)
+            3  selected-connectivity      |𝒜_c ∩ S| / |S|
+            4  hop distance to u          min(d(c,u), 2·k_hops) / k_hops
+            5  hop distance to v          min(d(c,v), 2·k_hops) / k_hops
+            6  Adamic-Adar to u
+            7  Adamic-Adar to v
+
+        Every quantity is defined on the target-safe adjacency ``𝒜``.  The
+        Adamic-Adar sums run over common neighbors ``w`` of the candidate and
+        the respective target with weight ``1/log(2+deg(w))``; distances come
+        from the per-trajectory bounded BFS, with missing entries (farther
+        than the cap) taking the cap value.
+        """
+        cap = 2 * k_hops
+        selected_size = len(selected)
+        rows = []
+        for candidate in candidates:
+            neighbors = adjacency[candidate]
+            in_u = candidate in adjacency[u]
+            in_v = candidate in adjacency[v]
+            rows.append([
+                float(in_u and in_v),
+                float(in_u) + float(in_v),
+                math.log1p(len(neighbors)) / log_dmax,
+                len(neighbors & selected) / selected_size,
+                min(dist_u.get(candidate, cap), cap) / k_hops,
+                min(dist_v.get(candidate, cap), cap) / k_hops,
+                sum(
+                    1.0 / math.log(2.0 + len(adjacency[w]))
+                    for w in neighbors & adjacency[u]
+                ),
+                sum(
+                    1.0 / math.log(2.0 + len(adjacency[w]))
+                    for w in neighbors & adjacency[v]
+                ),
+            ])
+        return torch.tensor(rows, dtype=torch.float32)
 
     def _prepare_inputs(self, node_features, edge_index, target_nodes, node_index):
         if node_features.ndim != 2 or node_features.shape[1] != self.esm_dim:
@@ -685,3 +841,90 @@ class RandomSubsetSampler(SubgraphSampler):
             selected, graph_edges, target_local, node_index, edge_relations
         )
         return SamplingTrajectory(graph, [])
+
+
+class HeuristicSampler(SubgraphSampler):
+    """Non-learnable ablation sampler: a hand-crafted same-budget selection.
+
+    Zero parameters and no steps, like :class:`RandomSubsetSampler`, so the
+    trainer only updates the predictor.  The node set is a deterministic,
+    topology-only ranking of the safe ``k_hops`` region: common neighbors of
+    both targets first, then nodes touching exactly one target, then the rest
+    of the region; within each tier nodes are ranked by safe degree
+    (descending) with node-id tie-breaks.  The size budget is identical to
+    :class:`RandomSubsetSampler` (same uniform ``min_size``..``max_size``
+    draw, mandatory seeds always included), so heuristic vs random vs static
+    isolates the value of an informed selection rule at a fixed budget.
+    """
+
+    def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10, k_hops=1,
+                 min_size=3, max_size=7):
+        # Deliberately no action-scoring parameters: this sampler is
+        # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
+        # keep the constructor signature uniform with ``SubgraphSampler`` (the
+        # values are not stored: this sampler never scores actions).
+        if k_hops < 0:
+            raise ValueError("k_hops must be non-negative")
+        if min_size < 2:
+            raise ValueError("min_size must be at least 2")
+        if max_size < min_size:
+            raise ValueError("max_size must be at least min_size")
+        nn.Module.__init__(self)
+        self.esm_dim = esm_dim
+        self.k_hops = k_hops
+        self.min_size = min_size
+        self.max_size = max_size
+
+    def sample(self, node_features, edge_index, target_nodes, node_index=None,
+               training=None, adjacency=None, edge_relations=None):
+        """Return one heuristic trajectory (size drawn from the global RNG).
+
+        The ``training`` flag is ignored: the ranking is deterministic, only
+        the budget draw comes from the global RNG (seeded by the training
+        entry), mirroring :class:`RandomSubsetSampler`.
+        """
+        node_features, edge_index, node_index, target_local = self._prepare_inputs(
+            node_features, edge_index, target_nodes, node_index
+        )
+        adjacency = self._prepare_adjacency(
+            edge_index, target_local, node_features.shape[0], adjacency
+        )
+
+        u, v = target_local.tolist()
+        selected = [u, v]
+        graph_edges = set()
+        self._add_virtual_proxies(
+            selected, graph_edges, adjacency, node_features, target_local
+        )
+        allowed = self._k_hop_region(selected, adjacency, self.k_hops)
+        candidates = sorted(allowed - set(selected))
+        if candidates:
+            target_size = int(torch.randint(self.min_size, self.max_size + 1, ()))
+            # Same clamp as RandomSubsetSampler: mandatory proxies may put
+            # ``len(selected)`` above ``min_size``.
+            k_extra = max(0, min(target_size - len(selected), len(candidates)))
+            ranked = self._rank_candidates(candidates, u, v, adjacency)
+            selected = selected + ranked[:k_extra]
+        self._add_real_edges(selected, graph_edges, adjacency)
+        graph = self._make_graph(
+            selected, graph_edges, target_local, node_index, edge_relations
+        )
+        return SamplingTrajectory(graph, [])
+
+    @staticmethod
+    def _rank_candidates(candidates, u, v, adjacency):
+        """Rank region nodes: common target neighbors first, then nodes
+        touching exactly one target, then the rest; within each tier by
+        descending safe degree with node-id tie-breaks."""
+        def degree_key(node):
+            return (-len(adjacency[node]), node)
+
+        common = [c for c in candidates
+                  if c in adjacency[u] and c in adjacency[v]]
+        touching = [c for c in candidates
+                    if (c in adjacency[u]) != (c in adjacency[v])]
+        rest = [c for c in candidates
+                if c not in adjacency[u] and c not in adjacency[v]]
+        return (sorted(common, key=degree_key)
+                + sorted(touching, key=degree_key)
+                + sorted(rest, key=degree_key))

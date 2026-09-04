@@ -21,9 +21,11 @@ import torch
 from sklearn.metrics import f1_score, roc_auc_score
 
 from .ppi_graph import PPIGraph
+from .ppr import PPRLookup
 from .predictor import PPIPredictor
 from .sampler import (
     EdgeRelationLookup,
+    HeuristicSampler,
     RandomSubsetSampler,
     StaticNeighborhoodSampler,
     SubgraphSampler,
@@ -137,6 +139,7 @@ def _aggregate_train_metrics(batch_records):
     reward_total = 0.0
     sampler_step_count = 0
     predictor_loss_total = 0.0
+    margin_total = 0.0
     sample_count = 0
     for batch_size, metrics in batch_records:
         steps = int(metrics["sampler_step_count"])
@@ -146,6 +149,7 @@ def _aggregate_train_metrics(batch_records):
 
         sampler_size = int(batch_size)
         predictor_loss_total += float(metrics["predictor_loss"]) * sampler_size
+        margin_total += float(metrics["mean_final_margin"]) * sampler_size
         sample_count += sampler_size
 
     return {
@@ -160,6 +164,10 @@ def _aggregate_train_metrics(batch_records):
         "mean_reward": (
             reward_total / sampler_step_count
             if sampler_step_count else 0.0
+        ),
+        "mean_final_margin": (
+            margin_total / sample_count
+            if sample_count else 0.0
         ),
         "sampler_step_count": sampler_step_count,
     }
@@ -226,6 +234,7 @@ def run(args):
             max_steps=args.max_steps,
             k_hops=args.k_hops,
             relation_dim=7 if use_sampler_edge_relations else None,
+            structural_features=args.sampler_structural_features,
         ).to(device)
     elif args.sampler == "static":
         sampler = StaticNeighborhoodSampler(
@@ -233,6 +242,15 @@ def run(args):
             hidden_dim=args.hidden_dim,
             max_steps=args.max_steps,
             k_hops=args.k_hops,
+        ).to(device)
+    elif args.sampler == "heuristic":
+        sampler = HeuristicSampler(
+            esm_dim=esm_dim,
+            hidden_dim=args.hidden_dim,
+            max_steps=args.max_steps,
+            k_hops=args.k_hops,
+            min_size=args.random_subset_min_size,
+            max_size=args.random_subset_max_size,
         ).to(device)
     else:
         sampler = RandomSubsetSampler(
@@ -243,6 +261,14 @@ def run(args):
             min_size=args.random_subset_min_size,
             max_size=args.random_subset_max_size,
         ).to(device)
+    ppr_lookup = None
+    if args.readout == "attention":
+        ppr_lookup = PPRLookup(
+            full_graph["edge_index"],
+            num_nodes=int(full_graph["node_feat"].shape[0]),
+            alpha=args.ppr_alpha,
+            eps=args.ppr_eps,
+        )
     predictor = PPIPredictor(
         esm_dim=esm_dim,
         hidden_dim=args.hidden_dim,
@@ -250,6 +276,8 @@ def run(args):
         heads=args.heads,
         dropout=args.dropout,
         edge_dim=7 if use_edge_relations else None,
+        readout=args.readout,
+        ppr=ppr_lookup,
     ).to(device)
     sampler_optimizer = (
         torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
@@ -268,6 +296,9 @@ def run(args):
         predictor_optimizer,
         reinforce_gamma=args.reinforce_gamma,
         edge_relations=edge_relations,
+        reward="margin" if args.reward_margin else "bce_diff",
+        reward_pos=args.reward_pos,
+        reward_neg=args.reward_neg,
     )
 
     # Build the full-graph adjacency once and share it across every training
@@ -336,15 +367,20 @@ def run(args):
             }
             if checkpoint_dir is not None:
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint_payload = {
+                    "epoch": epoch,
+                    "sampler": sampler.state_dict(),
+                    "predictor": predictor.state_dict(),
+                    "predictor_optimizer": predictor_optimizer.state_dict(),
+                }
+                # The non-learnable samplers (static / random-subset /
+                # heuristic) run without a sampler optimizer.
+                if sampler_optimizer is not None:
+                    checkpoint_payload["sampler_optimizer"] = (
+                        sampler_optimizer.state_dict()
+                    )
                 torch.save(
-                    {
-                        "epoch": epoch,
-                        "sampler": sampler.state_dict(),
-                        "predictor": predictor.state_dict(),
-                        "sampler_optimizer": sampler_optimizer.state_dict(),
-                        "predictor_optimizer": predictor_optimizer.state_dict(),
-                    },
-                    checkpoint_dir / f"best_{epoch}.pt",
+                    checkpoint_payload, checkpoint_dir / f"best_{epoch}.pt"
                 )
 
     # Strict protocol: evaluate the test set exactly once, after training, on
@@ -420,23 +456,28 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument(
-        "--sampler", choices=["rl", "static", "random-subset"], default="rl",
+        "--sampler", choices=["rl", "static", "random-subset", "heuristic"],
+        default="rl",
         help="rl: learned REINFORCE subgraph sampler (default); static: "
              "non-learnable sampler that takes the whole safe k-hops "
              "neighborhood of G0 (ablation for the effect of RL selection, "
              "predictor-only training); random-subset: non-learnable sampler "
              "that takes a uniformly random subset of the k-hops region with "
              "an RL-sized node budget (separates selection strategy from "
-             "context amount)",
+             "context amount); heuristic: non-learnable sampler that takes a "
+             "topology-ranked subset of the k-hops region (common target "
+             "neighbors first, then by degree) with the same budget as "
+             "random-subset (diagnostic for whether an informed selection "
+             "rule beats random at that budget)",
     )
     parser.add_argument(
         "--random-subset-min-size", type=int, default=3,
-        help="minimum final node count for --sampler random-subset "
+        help="minimum final node count for --sampler random-subset/heuristic "
              "(targets are always included)",
     )
     parser.add_argument(
         "--random-subset-max-size", type=int, default=7,
-        help="maximum final node count for --sampler random-subset",
+        help="maximum final node count for --sampler random-subset/heuristic",
     )
     parser.add_argument(
         "--k-hops", type=int, default=1,
@@ -455,9 +496,51 @@ def parse_args():
         help="use train-edge 7-D relations when the RL sampler scores frontier "
              "candidates; held-out, target and virtual edges remain all-zero",
     )
+    parser.add_argument(
+        "--sampler-structural-features", action="store_true",
+        help="add 8-D topology features (common-neighbor, target-touching, "
+             "degree, selected-connectivity, target distances, Adamic-Adar) "
+             "to the RL sampler's candidate scoring, with a linear skip "
+             "channel initialized to the heuristic ranking (greedy starts "
+             "equal to --sampler heuristic); requires --sampler rl",
+    )
     parser.add_argument("--sampler-lr", type=float, default=1e-4)
     parser.add_argument("--predictor-lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--readout", choices=["mean", "attention"], default="mean",
+        help="predictor readout: mean (default, historical mean pooling) or "
+             "attention (keep mean pooling and add a target-anchored "
+             "LinkAttention summary with PPR positional encodings, "
+             "RISE-DDI style; requires --ppr-alpha/--ppr-eps for the "
+             "label-free PPR precomputation)",
+    )
+    parser.add_argument(
+        "--ppr-alpha", type=float, default=0.15,
+        help="teleport probability of the PPR random walks (--readout "
+             "attention)",
+    )
+    parser.add_argument(
+        "--ppr-eps", type=float, default=5e-6,
+        help="forward-push accuracy threshold of the PPR rows (--readout "
+             "attention)",
+    )
     parser.add_argument("--reinforce-gamma", type=float, default=1.0)
+    parser.add_argument(
+        "--reward-margin", action="store_true",
+        help="score sampler actions by the label-aligned mean probability "
+             "margin M(p) = mean_j((2y_j-1)*p_j): each step is rewarded by "
+             "its margin improvement over the fixed G0 reference, scaled by "
+             "--reward-pos/--reward-neg for improvements/regressions "
+             "(RISE-DDI-style), instead of the sequential BCE difference",
+    )
+    parser.add_argument(
+        "--reward-pos", type=float, default=2.0,
+        help="reward scale for margin improvements (--reward-margin)",
+    )
+    parser.add_argument(
+        "--reward-neg", type=float, default=1.0,
+        help="reward scale for margin regressions (--reward-margin)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.split not in PPIGraph.AVAILABLE_SPLITS[args.dataset]:
@@ -481,6 +564,14 @@ def parse_args():
         parser.error("random-subset-max-size must be >= random-subset-min-size")
     if args.use_sampler_edge_relations and args.sampler != "rl":
         parser.error("sampler edge relations require --sampler rl")
+    if args.sampler_structural_features and args.sampler != "rl":
+        parser.error("sampler structural features require --sampler rl")
+    if args.reward_pos <= 0.0 or args.reward_neg <= 0.0:
+        parser.error("reward-pos and reward-neg must be positive")
+    if not 0.0 < args.ppr_alpha < 1.0:
+        parser.error("ppr-alpha must be in (0, 1)")
+    if args.ppr_eps <= 0.0:
+        parser.error("ppr-eps must be positive")
     return args
 
 

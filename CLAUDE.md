@@ -2,14 +2,28 @@
 
 本项目使用预计算的 ESM-2 蛋白质 embedding 进行 7 类 PPI 多标签预测。模型由全图知识图谱（KG）、REINFORCE 子图 Sampler 和 GAT Predictor 组成。
 
+## 当前结论（截至 docs/README.md §15，2026-09-04）
+
+- **最优配置**：`--sampler static --k-hops 1 --readout attention`（MacAUC
+  0.8105 / MacF1 0.6158 / MicF1 0.6454，599s）——A1 读出重构（target 锚定
+  LinkAttention + PPR 位置编码）是唯一抬高天花板的改动；
+- **RL 小预算平台**：6.5–7 节点预算下 RL/heur 恒在 ~0.78，sampler 侧修复
+  （结构特征 P2a、margin 奖励 R1、attention 读出 V2/V3）均无法突破；
+- RL 实验默认带 `--reward-margin`（更稳、`mean_final_margin` 诊断免费）；
+  heur 是 sampler 改动的行为基准（同预算配对判定，打不过 heur 即无效）；
+- 未测路径：A2（static 底座 ∪ RL 增补，RISE-DDI 采样语义）。
+
 ## 代码结构
 
-- `src/ppi_graph.py`：加载数据、聚合标签并构建全图 KG 与 split 局部图。
-- `src/sampler.py`：为每个目标 PPI 生成子图轨迹。
-- `src/predictor.py`：使用 GAT 编码子图并输出 7 维 logits。
-- `src/trainer.py`：交替更新 Sampler 和 Predictor。
-- `src/train_shs27k.py`：训练、验证和测试入口，支持 SHS27k、SHS148k 和 STRING。
-- `tests/`：图构建、采样、训练图选择和 RTG 测试。
+- `src/ppi_graph.py`：加载数据、聚合标签并构建全图 KG 与 split 局部图；
+- `src/ppr.py`：无标签全图拓扑上的稀疏 PPR（forward-push，按目标惰性缓存）；
+- `src/sampler.py`：RL Sampler 及 static / random-subset / heuristic 消融；
+- `src/predictor.py`：GAT 编码 + 读出（mean / attention+PPR），7 维 logits；
+- `src/trainer.py`：交替更新 Sampler 与 Predictor（BCE 差分或 margin 奖励）；
+- `src/train_shs27k.py`：训练、验证和测试入口，支持 SHS27k、SHS148k 和 STRING；
+- `tests/`：86 项单测（图构建、PPR、采样、奖励、读出与入参守卫）；
+- 机制细节与不变量见 [src/CLAUDE.md](src/CLAUDE.md)，实验记录（唯一事实源）
+  见 [docs/README.md](docs/README.md)。
 
 ## 数据与 split 约束
 
@@ -23,86 +37,51 @@
   `dfs`；非法组合与缺失的 split 文件都在参数解析阶段报错。
 - split 只决定各阶段的目标 PPI 对与训练节点集合；Sampler、代理候选、frontier 和 Predictor 输入全部使用全图的节点与边。
 - 每次采样前从安全邻接中移除目标边 `(u,v)` 和 `(v,u)`，避免标签泄漏。
-- `--use-edge-relations` 可选开启 relation-aware GAT：只有 train split 边携带
-  7 维 multi-hot relation；val/test 拓扑边、虚拟 proxy 边和 GAT self-loop 的
-  relation 恒为全零。查询目标边仍先被完全移除，因此自身标签不会进入输入。
-- `--use-sampler-edge-relations` 独立开启 RL Sampler 的 relation-aware 动作打分：
-  候选节点与当前已选节点间的可见关系按逐维 max/OR 聚合、投影并加到 candidate
-  表示。该开关只适用于 `--sampler rl`，可与 Predictor relation 开关独立消融。
+- `--use-edge-relations`（Predictor GAT）与 `--use-sampler-edge-relations`
+  （RL 动作打分）独立开关，默认关闭；只有 train split 边携带 7 维 multi-hot
+  relation，val/test 拓扑边、虚拟 proxy 边和 self-loop 恒为全零。
 
 ## 当前 Sampler 设计
 
-- 只有安全邻接为空的目标才选择虚拟 proxy；proxy 从全图的非目标节点中按 ESM embedding 余弦相似度选择，两个目标可以共享 proxy。
-- `baseline_graph` 是唯一初始图 `G_0`，只包含 `u`、`v` 和必要的虚拟 proxy；安全一跳邻居不预先采样。
-- `G_0` 保留初始节点之间的安全诱导边和必要的虚拟 proxy 边；目标边不进入 `G_0` 或 step graph。
-- 后续动作候选是当前 frontier，但只保留距 `G_0` 种子（`u`、`v`、proxy）不超过 `k_hops` 的安全节点；默认 `k_hops=1`。`max_steps` 只限制动作次数（默认 `10`），当前没有 STOP 动作或双目标平衡约束。
-- 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用贪心动作。
-- `StaticNeighborhoodSampler`（消融用、不可学习、零参数）：直接取 `G_0` 种子的
-  全部安全 `k_hops` 邻居（区域诱导子图），轨迹无动作、仅训练 Predictor；用于
-  检验 RL 选取的作用（static 图是任一 RL 轨迹图的信息上界）。
-- `RandomSubsetSampler`（消融用、不可学习、零参数）：从 `k_hops` 区域均匀随机
-  取与 RL 同规模（`min_size`~`max_size`，恒含 u/v）的节点子集 + 诱导边，轨迹
-  无动作、仅训练 Predictor；与 RL 同规模对比，用于分离"上下文量"与"选取
-  策略"。
-- 动作 score 使用独立的 state/candidate 投影，拼接后映射回 hidden_dim 并加回
-  投影 state（残差），再过 LN/Tanh 打分头：
-  `Linear(2*hidden_dim→hidden_dim)（+state 残差）→ Linear(hidden_dim→hidden_dim//2)
-  → LayerNorm → Tanh → Linear(hidden_dim//2→1)`。
-- 开启 Sampler relation 后，candidate 投影会先加上候选到当前已选子图的 7 维
-  relation 聚合投影；未知、held-out、目标边及 proxy relation 均为零。
+- 只有安全邻接为空的目标才选择虚拟 proxy；proxy 从全图的非目标节点中按 ESM
+  embedding 余弦相似度选择，两个目标可以共享 proxy。
+- `baseline_graph` 是唯一初始图 `G_0`，只包含 `u`、`v` 和必要的虚拟 proxy
+  及其安全诱导边；目标边不进入 `G_0` 或 step graph。
+- 后续动作候选是当前 frontier，只保留距 `G_0` 种子不超过 `k_hops`（默认 1）
+  的安全节点；`max_steps` 只限制动作次数（默认 10），无 STOP 动作。
+- 训练使用 Categorical 随机动作和可导 `log_prob`；评估及 Predictor 更新使用
+  贪心动作。打分头/结构特征/relation 的公式细节见 src/CLAUDE.md。
+- `StaticNeighborhoodSampler` / `RandomSubsetSampler` / `HeuristicSampler`
+  （均不可学习、零参数、轨迹无动作）：分别取全部安全 k-hop 区域、同预算
+  随机子集、同预算确定性拓扑排序（共邻→单侧→其余）；heur 为 RL 的行为基准。
 
 ## RL 与训练
 
-每条轨迹的奖励和 return-to-go 为：
+- Sampler 更新：Predictor 冻结（eval + no_grad），现行奖励为增量 BCE 差分
+  `r_t = L(G_{t−1}) − L(G_t)`（首步以 `G_0` 为前项，无 Δn 惩罚）；
+  `--reward-margin`（默认关闭）改为固定 G0 参考的标签对齐平均概率边际改进
+  `M(p)=mean_j((2y_j−1)·p_j) ∈ [−1,1]`，非对称缩放默认 2:1。
+  return-to-go `G_t = r_t + γG_{t+1}`，advantage 为 batch 内标准化的
+  detached RTG，`L_pol = −log π·stopgrad(Â)`。
+- Predictor 更新：Sampler 冻结，只用每条贪心轨迹的 `final_graph` 做 BCE。
+- F1 使用固定阈值 `0.5`；`mean_final_margin` 两种奖励模式均进入 epoch 记录。
+- 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态（`--checkpoint-dir`
+  落盘或内存保留），训练结束后仅在最佳状态上测试一次。
 
-\[
-r_t=L_{t-1}-L_t, \qquad G_t=r_t+\gamma G_{t+1}
-\]
-
-其中第一步的 \(L_{t-1}\) 是初始图 \(G_0\) 的 loss；不包含子图大小或
-\(\Delta n\) 惩罚。
-
-Sampler 更新为（无学习 baseline，advantage 即 return-to-go）：
-
-\[
-\hat A_t=\frac{A_t-\operatorname{mean}_{\mathrm{batch}}(A)}
-{\max(\operatorname{std}_{\mathrm{batch}}(A),10^{-8})},
-\qquad A_t=G_t
-\]
-
-\[
-L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t),
-\qquad L_{sampler}=L_{policy}
-\]
-
-- Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算增量奖励；同一 batch 的全部动作 step 对 detached return-to-go 做标准化。
-- Predictor 更新时 Sampler 冻结，只使用每条贪心轨迹的 `final_graph`；无动作时 `final_graph` 就是 `G_0`。
-- Predictor 与 Sampler 的 relation-aware 模式分别由两个独立开关控制，默认均关闭
-  以保持历史实验可复现。
-- F1 使用固定阈值 `0.5`。
-- 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态，训练结束后仅在最佳状态上测试一次。
-- 指定 `--checkpoint-dir` 时保存最佳 checkpoint；未指定时将最佳 Sampler/Predictor 状态保存在内存中。
-
-典型命令：
+## 典型命令
 
 ```bash
-python -m src.train_shs27k \
-  --dataset SHS27k \
-  --split bfs \
-  --device cuda \
-  --epochs 10 \
-  --hidden-dim 256 \
-  --k-hops 1 \
-  --max-steps 10 \
-  --use-edge-relations \
-  --reinforce-gamma 0.9
+# 当前最优（static + attention 读出，无 sampler 训练）
+python -m src.train_shs27k --dataset SHS27k --split bfs --device cuda \
+  --epochs 20 --hidden-dim 128 --sampler static --k-hops 1 --readout attention
+
+# RL 基线（margin 奖励）
+python -m src.train_shs27k --dataset SHS27k --split bfs --device cuda \
+  --epochs 20 --hidden-dim 128 --sampler rl --max-steps 5 \
+  --reinforce-gamma 0.9 --reward-margin
 ```
 
 测试集额外按训练节点可见性分为 BS、ES、NS；空分组返回 `count=0` 和 `None` 指标。
-
-## 性能优化方向
-
-详见 [docs/README.md](docs/README.md)（docs 唯一报告，含性能优化方向与历史实验记录）。当前优先级为：缓存投影结果、增量维护状态和减少 Predictor 重复前向；STRING 扩展时再考虑 CSR tensor 邻接和 tensor frontier（全图下收益更大）。
 
 ## 提交约定
 

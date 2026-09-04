@@ -25,6 +25,11 @@
 - `relation_dim` 启用 RL relation-aware 打分；每个候选到当前已选节点的可见关系
   逐维 max/OR 聚合，经无 bias 投影后加到 candidate 表示。聚合只查询目标安全
   adjacency，因此目标边 relation 不会进入策略。
+- `structural_features`（`--sampler-structural-features`，RL 专属）开启候选
+  拓扑特征（8 维：共邻指示、触目标数、归一化安全度数、已选连接率、有界目标
+  距离、Adamic-Adar），经零初始化投影进 candidate 表示，另加先验初始化的
+  可训练线性 skip（初始 greedy ≡ heuristic 排序）；两路径均只用安全邻接，
+  目标边不可见。
 
 ### G0 与轨迹
 
@@ -43,6 +48,10 @@
   取 `min_size`~`max_size`（恒含 u/v）个节点的诱导子图，无动作；与 RL 同规模
   对比，用于分离"上下文量"与"选取策略"（random-subset 模式由
   `--sampler random-subset` 开启，规模由 `--random-subset-min/max-size` 控制）。
+- `HeuristicSampler`（诊断用，不可学习，零参数）：同预算下按确定性拓扑规则
+  选取——u/v 公共邻居 → 单侧邻接 → 区域其余，层内按安全度数降序、id 升序
+  （`--sampler heuristic`，规模与 random-subset 共用同一组开关）；作为 RL 的
+  行为基准。
 
 ### Action score
 
@@ -66,7 +75,7 @@ Sampler 更新阶段：
 
 1. 冻结 Predictor，随机生成 trajectory。
 2. 计算 `G_0` 和所有 step graph 的 Predictor BCE loss。
-3. 使用增量奖励 `r_t = L_{t-1} - L_t`；第一步以 `G_0` loss 为前项，不包含 `Δn` 或其他复杂度惩罚。
+3. 使用增量奖励 `r_t = L_{t-1} - L_t`；第一步以 `G_0` loss 为前项，不包含 `Δn` 或其他复杂度惩罚。`--reward-margin` 开启替代方案：`r_t` 改为固定 G0 参考的标签对齐平均概率边际改进（`M(p)=mean_j((2y_j−1)·p_j) ∈ [−1,1]`，`--reward-pos/neg` 非对称缩放，默认 2:1）。`mean_final_margin` 指标两种模式均输出并进入 epoch 记录。
 4. 对每条 trajectory 从后向前计算 `G_t = r_t + gamma * G_{t+1}`。
 5. 汇总同一 batch 的 detached `G_t`（无学习 baseline），按 batch 均值和总体标准差标准化后计算 `policy_loss`，再更新 Sampler。
 
@@ -84,8 +93,15 @@ self-loop relation 固定为零，Sampler relation 开关不允许用于非 RL s
 
 - 输入特征经过线性层、LayerNorm、ReLU 和 Dropout。
 - 图编码使用多层 GAT，并通过 residual/LayerNorm 稳定训练。
-- readout 使用 `h_u+h_v`、`|h_u-h_v|` 和子图节点均值。
-- 输出 7 维 logits；公共 `predict_proba()` 保留并执行 sigmoid。
+- 读出使用 `h_u+h_v`、`|h_u−h_v|` 和子图节点均值；`--readout attention`
+  （默认 mean）在此之上**加性**追加目标锚定的 LinkAttention 摘要 `z`
+  （RISE-DDI 机制：e1/e2 作为独立查询、GATv2 式门控、PPR 位置编码拼进
+  key、共邻/单侧邻接层各用独立编码器、其余节点 PE=0），输出宽 3h→4h。
+  PPR 在无标签全图拓扑上 forward-push 预计算（`src/ppr.py`，α/eps 可配），
+  按目标惰性缓存；attention 模式的 `forward` 需要 `node_ids`（全局蛋白 id）。
+  全图 KG 下 static k1 + attention 为当前项目最优（MacAUC 0.8105 /
+  MacF1 0.6158，docs §15）。
+- 输出 7 维 logits；推理概率直接对 logits 取 sigmoid。
 - 支持多图 batch。
 
 ## 评估

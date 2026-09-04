@@ -249,12 +249,14 @@ class SamplerMetricAggregationTest(unittest.TestCase):
                 "sampler_loss": 2.0,
                 "mean_reward": 4.0,
                 "predictor_loss": 10.0,
+                "mean_final_margin": 0.2,
                 "sampler_step_count": 1,
             }),
             (1, {
                 "sampler_loss": 4.0,
                 "mean_reward": 1.0,
                 "predictor_loss": 2.0,
+                "mean_final_margin": 0.5,
                 "sampler_step_count": 3,
             }),
         ])
@@ -262,6 +264,7 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         self.assertAlmostEqual(aggregate["sampler_loss"], 3.5)
         self.assertAlmostEqual(aggregate["mean_reward"], 1.75)
         self.assertAlmostEqual(aggregate["predictor_loss"], 22 / 3)
+        self.assertAlmostEqual(aggregate["mean_final_margin"], 0.3)
 
     def test_no_action_batch_does_not_enter_sampler_denominator(self):
         aggregate = _aggregate_train_metrics([
@@ -269,12 +272,14 @@ class SamplerMetricAggregationTest(unittest.TestCase):
                 "sampler_loss": 99.0,
                 "mean_reward": 99.0,
                 "predictor_loss": 3.0,
+                "mean_final_margin": 0.1,
                 "sampler_step_count": 0,
             }),
             (1, {
                 "sampler_loss": 5.0,
                 "mean_reward": 7.0,
                 "predictor_loss": 6.0,
+                "mean_final_margin": 0.4,
                 "sampler_step_count": 2,
             }),
         ])
@@ -282,6 +287,80 @@ class SamplerMetricAggregationTest(unittest.TestCase):
         self.assertEqual(aggregate["sampler_loss"], 5.0)
         self.assertEqual(aggregate["mean_reward"], 7.0)
         self.assertEqual(aggregate["predictor_loss"], 4.0)
+        self.assertAlmostEqual(aggregate["mean_final_margin"], 0.2)
+
+
+class MarginRewardTest(unittest.TestCase):
+    def test_label_margins_align_with_the_label_vector(self):
+        logits = torch.tensor([[2.0, -2.0], [0.0, 0.0]])
+        labels = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+
+        margins = AlternatingTrainer._label_margins(logits, labels)
+
+        expected_0 = (float(torch.sigmoid(torch.tensor(2.0)))
+                      - float(torch.sigmoid(torch.tensor(-2.0)))) / 2.0
+        self.assertAlmostEqual(float(margins[0]), expected_0, places=6)
+        self.assertAlmostEqual(float(margins[1]), 0.0, places=6)
+
+    def test_margin_rewards_scale_around_the_fixed_reference(self):
+        rewards = AlternatingTrainer._trajectory_rewards_margin(
+            torch.tensor(0.2),
+            torch.tensor([0.3, 0.1, 0.2]),
+            w_pos=2.0, w_neg=1.0,
+        )
+
+        self.assertAlmostEqual(float(rewards[0]), 0.2, places=6)
+        self.assertAlmostEqual(float(rewards[1]), -0.1, places=6)
+        self.assertAlmostEqual(float(rewards[2]), 0.0, places=6)
+        for reward in rewards:
+            self.assertFalse(reward.requires_grad)
+
+    def test_trainer_validates_reward_configuration(self):
+        sampler = _RecordingSampler(
+            SamplingTrajectory(baseline_graph=_graph([0, 1]), steps=[])
+        )
+        predictor = _RecordingPredictor()
+        for kwargs in (
+            {"reward": "bogus"},
+            {"reward_pos": 0.0},
+            {"reward_neg": -1.0},
+        ):
+            with self.assertRaisesRegex(ValueError, "reward"):
+                AlternatingTrainer(
+                    sampler, predictor,
+                    torch.optim.SGD(sampler.parameters(), lr=0.1),
+                    torch.optim.SGD(predictor.parameters(), lr=0.1),
+                    **kwargs,
+                )
+
+    def test_margin_mode_reports_final_margins_and_zero_policy_loss(self):
+        # Static sampler: no steps, so the final margin is the baseline
+        # margin. _RecordingPredictor emits logit 0 -> sigmoid 0.5; with an
+        # all-zero label vector every sign is -1 -> M = -0.5.
+        node_features = torch.zeros((3, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2],
+            [1, 0, 2, 0],
+        ])
+        sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
+        predictor = _RecordingPredictor()
+        trainer = _RecordingTrainer(
+            sampler,
+            predictor,
+            None,
+            torch.optim.SGD(predictor.parameters(), lr=0.1),
+            reward="margin",
+        )
+
+        metrics = trainer.sampler_batch_step(
+            node_features, edge_index, torch.tensor([[0, 1]]),
+            torch.zeros((1, 7)),
+        )
+
+        self.assertEqual(metrics["sampler_step_count"], 0)
+        self.assertAlmostEqual(float(metrics["mean_final_margin"]), -0.5,
+                               places=6)
+        self.assertAlmostEqual(float(metrics["sampler_loss"]), 0.0, places=6)
 
 if __name__ == "__main__":
     unittest.main()

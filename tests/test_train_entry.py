@@ -26,11 +26,27 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
             self.assertTrue(parse_args().use_sampler_edge_relations)
 
     def test_sampler_relations_require_rl_sampler(self):
+        for sampler in ("static", "random-subset", "heuristic"):
+            with patch.object(
+                sys,
+                "argv",
+                ["train_shs27k", "--sampler", sampler,
+                 "--use-sampler-edge-relations"],
+            ):
+                with self.assertRaises(SystemExit):
+                    parse_args()
+
+    def test_structural_features_flag(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            self.assertFalse(parse_args().sampler_structural_features)
         with patch.object(
-            sys,
-            "argv",
+            sys, "argv", ["train_shs27k", "--sampler-structural-features"]
+        ):
+            self.assertTrue(parse_args().sampler_structural_features)
+        with patch.object(
+            sys, "argv",
             ["train_shs27k", "--sampler", "static",
-             "--use-sampler-edge-relations"],
+             "--sampler-structural-features"],
         ):
             with self.assertRaises(SystemExit):
                 parse_args()
@@ -56,15 +72,6 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
         self.assertTrue(torch.equal(actual[0], graph.ppi_labels[0]))
         self.assertTrue(torch.equal(actual[1:], torch.zeros((2, 7))))
 
-    def test_fixed_num_is_rejected_after_removal(self):
-        with patch.object(
-            sys,
-            "argv",
-            ["train_shs27k", "--fixed-num", "1"],
-        ):
-            with self.assertRaises(SystemExit):
-                parse_args()
-
     def test_k_hops_defaults_to_one_and_accepts_explicit_values(self):
         with patch.object(sys, "argv", ["train_shs27k"]):
             self.assertEqual(parse_args().k_hops, 1)
@@ -86,6 +93,8 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
             self.assertEqual(args.sampler, "random-subset")
             self.assertEqual(args.random_subset_min_size, 3)
             self.assertEqual(args.random_subset_max_size, 7)
+        with patch.object(sys, "argv", ["train_shs27k", "--sampler", "heuristic"]):
+            self.assertEqual(parse_args().sampler, "heuristic")
 
     def test_invalid_sampler_value_is_rejected(self):
         with patch.object(sys, "argv", ["train_shs27k", "--sampler", "bogus"]):
@@ -105,6 +114,49 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 parse_args()
+
+    def test_readout_flags(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            args = parse_args()
+            self.assertEqual(args.readout, "mean")
+            self.assertAlmostEqual(args.ppr_alpha, 0.15)
+            self.assertAlmostEqual(args.ppr_eps, 5e-6)
+        with patch.object(
+            sys, "argv", ["train_shs27k", "--readout", "attention"]
+        ):
+            self.assertEqual(parse_args().readout, "attention")
+        for argv in (
+            ["train_shs27k", "--readout", "bogus"],
+            ["train_shs27k", "--ppr-alpha", "0"],
+            ["train_shs27k", "--ppr-alpha", "1.5"],
+            ["train_shs27k", "--ppr-eps", "0"],
+        ):
+            with patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    parse_args()
+
+    def test_reward_flags(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            args = parse_args()
+            self.assertFalse(args.reward_margin)
+            self.assertEqual(args.reward_pos, 2.0)
+            self.assertEqual(args.reward_neg, 1.0)
+        with patch.object(
+            sys, "argv",
+            ["train_shs27k", "--reward-margin",
+             "--reward-pos", "3.0", "--reward-neg", "0.5"],
+        ):
+            args = parse_args()
+            self.assertTrue(args.reward_margin)
+            self.assertEqual(args.reward_pos, 3.0)
+            self.assertEqual(args.reward_neg, 0.5)
+        for argv in (
+            ["train_shs27k", "--reward-pos", "0"],
+            ["train_shs27k", "--reward-neg", "-1"],
+        ):
+            with patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    parse_args()
 
     def test_missing_split_file_is_rejected_at_parse_time(self):
         # bfs is a valid SHS148k split (served by --root dataset_ppisplit), so

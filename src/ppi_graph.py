@@ -23,7 +23,6 @@ import json
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Dataset
 
 
 class PPIGraph:
@@ -238,38 +237,6 @@ class PPIGraph:
         }
 
     # ------------------------------------------------------------------ #
-    # DataLoader
-    # ------------------------------------------------------------------ #
-    def get_dataloader(self, split_name="train", batch_size=32, shuffle=None,
-                       num_workers=0, drop_last=False, pin_memory=False,
-                       collate_fn=None, **kwargs):
-        """Build a DataLoader over the PPI pairs of ``split_name``.
-
-        Each sample is a ``(u, v, label)`` tuple:
-            u, v   : LongTensor [B]  protein indices of the interacting pair
-            label  : FloatTensor [B, 7]  multi-hot label
-
-        ``shuffle`` defaults to ``True`` for train, ``False`` otherwise.
-        """
-        if self.device.type == "cuda" and num_workers:
-            raise ValueError("num_workers must be 0 when PPIGraph uses a CUDA device")
-        if self.device.type == "cuda" and pin_memory:
-            raise ValueError("pin_memory requires CPU tensors; use device='cpu'")
-        if shuffle is None:
-            shuffle = split_name == "train"
-        dataset = _PPIDataset(self, self.get_ppi_indices(split_name))
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            drop_last=drop_last,
-            pin_memory=pin_memory,
-            collate_fn=collate_fn,
-            **kwargs,
-        )
-
-    # ------------------------------------------------------------------ #
     # Misc
     # ------------------------------------------------------------------ #
     def __repr__(self):
@@ -278,20 +245,3 @@ class PPIGraph:
         return (f"PPIGraph(name={self.name!r}, split={self.split!r}, "
                 f"proteins={self.tensor.shape[0]}, dim={self.tensor.shape[1]}, "
                 f"n_ppi={len(self.ppi_list)}, splits={sizes})")
-
-
-class _PPIDataset(Dataset):
-    """Dataset over PPI indices; each item yields ``(u, v, label)``."""
-
-    def __init__(self, graph, ppi_indices):
-        self.graph = graph
-        self.ppi_indices = ppi_indices
-
-    def __len__(self):
-        return self.ppi_indices.numel()
-
-    def __getitem__(self, i):
-        ppi_idx = int(self.ppi_indices[i])
-        u, v = self.graph.ppi[ppi_idx, 0], self.graph.ppi[ppi_idx, 1]
-        label = self.graph.ppi_labels[ppi_idx]
-        return u, v, label

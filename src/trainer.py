@@ -13,9 +13,14 @@ class AlternatingTrainer:
     """
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,
-                 reinforce_gamma=1.0, edge_relations=None):
+                 reinforce_gamma=1.0, edge_relations=None, reward="bce_diff",
+                 reward_pos=2.0, reward_neg=1.0):
         if not 0.0 <= reinforce_gamma <= 1.0:
             raise ValueError("reinforce_gamma must be in [0, 1]")
+        if reward not in ("bce_diff", "margin"):
+            raise ValueError("reward must be 'bce_diff' or 'margin'")
+        if reward_pos <= 0.0 or reward_neg <= 0.0:
+            raise ValueError("reward_pos and reward_neg must be positive")
         # ``sampler_optimizer`` may be None when the sampler has no parameters
         # (e.g. the non-learnable ``StaticNeighborhoodSampler``): its update
         # phase is a no-op because such trajectories carry no steps, so the
@@ -26,6 +31,9 @@ class AlternatingTrainer:
         self.predictor_optimizer = predictor_optimizer
         self.reinforce_gamma = reinforce_gamma
         self.edge_relations = edge_relations
+        self.reward = reward
+        self.reward_pos = reward_pos
+        self.reward_neg = reward_neg
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
                            node_index=None, adjacency=None):
@@ -60,6 +68,7 @@ class AlternatingTrainer:
             baseline_losses = F.binary_cross_entropy_with_logits(
                 baseline_logits, labels, reduction="none"
             ).mean(dim=1)
+            baseline_margins = self._label_margins(baseline_logits, labels)
 
         step_records = [
             (sample_index, step)
@@ -75,6 +84,7 @@ class AlternatingTrainer:
                 "policy_loss": zero,
                 "baseline_loss": baseline_losses.mean().detach(),
                 "mean_reward": zero,
+                "mean_final_margin": baseline_margins.mean().detach(),
                 "sampler_step_count": 0,
             }
 
@@ -88,15 +98,28 @@ class AlternatingTrainer:
             step_losses = F.binary_cross_entropy_with_logits(
                 step_logits, step_labels, reduction="none"
             ).mean(dim=1)
+            step_margins = self._label_margins(step_logits, step_labels)
 
-        rewards_by_trajectory = [[] for _ in trajectories]
+        rewards_by_trajectory = []
+        final_margins = []
         record_index = 0
         for sample_index, trajectory in enumerate(trajectories):
             step_count = len(trajectory.steps)
-            rewards_by_trajectory[sample_index] = self._trajectory_rewards(
-                baseline_losses[sample_index],
-                step_losses[record_index:record_index + step_count],
-            )
+            margins = step_margins[record_index:record_index + step_count]
+            if self.reward == "margin":
+                rewards_by_trajectory.append(self._trajectory_rewards_margin(
+                    baseline_margins[sample_index], margins,
+                    self.reward_pos, self.reward_neg,
+                ))
+            else:
+                rewards_by_trajectory.append(self._trajectory_rewards(
+                    baseline_losses[sample_index],
+                    step_losses[record_index:record_index + step_count],
+                ))
+            if step_count:
+                final_margins.append(margins[-1])
+            else:
+                final_margins.append(baseline_margins[sample_index])
             record_index += step_count
 
         returns_by_trajectory = [
@@ -131,6 +154,7 @@ class AlternatingTrainer:
             "policy_loss": policy_loss.detach(),
             "baseline_loss": baseline_losses.mean().detach(),
             "mean_reward": torch.stack(rewards).mean(),
+            "mean_final_margin": torch.stack(final_margins).mean().detach(),
             "sampler_step_count": len(step_records),
         }
 
@@ -191,12 +215,14 @@ class AlternatingTrainer:
         targets = []
         batches = []
         edge_attrs = []
+        node_ids = []
         edge_dim = getattr(self.predictor, "edge_dim", None)
         offset = 0
         for graph_index, graph in enumerate(graphs):
             graph_features = node_features[graph.feature_index]
             features.append(graph_features)
             edges.append(graph.edge_index + offset)
+            node_ids.append(graph.node_index)
             if edge_dim is not None:
                 if graph.edge_attr is None:
                     raise ValueError(
@@ -215,6 +241,14 @@ class AlternatingTrainer:
             torch.stack(targets),
             torch.cat(batches),
         )
+        if getattr(self.predictor, "readout", "mean") == "attention":
+            node_ids_arg = torch.cat(node_ids)
+            if edge_dim is None:
+                return self.predictor(*predictor_args, node_ids=node_ids_arg)
+            return self.predictor(
+                *predictor_args, edge_attr=torch.cat(edge_attrs, dim=0),
+                node_ids=node_ids_arg,
+            )
         if edge_dim is None:
             return self.predictor(*predictor_args)
         return self.predictor(
@@ -232,6 +266,31 @@ class AlternatingTrainer:
             running = rewards[index] + gamma * running
             returns[index] = running
         return returns
+
+    @staticmethod
+    def _label_margins(logits, labels):
+        """Label-aligned mean probability margin per sample.
+
+        ``M(p) = mean_j((2*y_j - 1) * p_j) ∈ [-1, 1]``: positive exactly when
+        the predicted probabilities lean toward the multi-hot label vector.
+        """
+        signs = labels * 2.0 - 1.0
+        return (signs * torch.sigmoid(logits)).mean(dim=1)
+
+    @staticmethod
+    def _trajectory_rewards_margin(baseline_margin, step_margins,
+                                   w_pos=2.0, w_neg=1.0):
+        """Margin-improvement rewards against the fixed G0 reference.
+
+        Every step is scored by ``M(step) - M(G0)`` — the same reference for
+        all steps, unlike the sequential BCE difference — and scaled by
+        ``w_pos`` for improvements and ``w_neg`` for regressions
+        (RISE-DDI-style asymmetric weighting).  The margin is linear and
+        bounded in [−1, 1], avoiding the heavy tails of BCE differences.
+        """
+        delta = step_margins - baseline_margin
+        scaled = torch.where(delta > 0, delta * w_pos, delta * w_neg)
+        return [value.detach() for value in scaled]
 
     @staticmethod
     def _trajectory_rewards(baseline_loss, step_losses):

@@ -1,9 +1,11 @@
+import math
 import unittest
 
 import torch
 
 from src.sampler import (
     EdgeRelationLookup,
+    HeuristicSampler,
     RandomSubsetSampler,
     StaticNeighborhoodSampler,
     SubgraphSampler,
@@ -100,7 +102,6 @@ class SubgraphSamplerTest(unittest.TestCase):
         self.assertEqual(sampler.pair_proj.out_features, 4)
         self.assertEqual(sampler.fc[0].in_features, 4)
         self.assertEqual(sampler.fc[-1].out_features, 1)
-        self.assertFalse(hasattr(sampler, "fixed_num"))
         self.assertEqual(sampler.k_hops, 1)
 
     def test_candidate_relations_are_or_aggregated_over_selected_edges(self):
@@ -781,6 +782,242 @@ class RandomSubsetSamplerTwoIsolatedTargetsTest(unittest.TestCase):
             sizes.add(len(nodes))
         self.assertTrue(max(sizes) <= 7)
         self.assertTrue(max(sizes) > 4)  # a size-3 draw must still add nodes
+
+
+class HeuristicSamplerTest(unittest.TestCase):
+    def test_has_no_learnable_parameters_and_validates_size_range(self):
+        sampler = HeuristicSampler(esm_dim=2, k_hops=1, min_size=3, max_size=5)
+
+        self.assertEqual(list(sampler.parameters()), [])
+        self.assertEqual((sampler.min_size, sampler.max_size), (3, 5))
+        with self.assertRaisesRegex(ValueError, "k_hops"):
+            HeuristicSampler(esm_dim=2, k_hops=-1)
+        with self.assertRaisesRegex(ValueError, "min_size"):
+            HeuristicSampler(esm_dim=2, min_size=1)
+        with self.assertRaisesRegex(ValueError, "max_size"):
+            HeuristicSampler(esm_dim=2, min_size=5, max_size=3)
+
+    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+        node_features = torch.eye(8, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
+            [1, 0, 2, 0, 3, 0, 4, 0, 5, 1, 6, 1, 7, 1],
+        ])
+        sampler = HeuristicSampler(esm_dim=8, k_hops=1, min_size=3, max_size=5)
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(trajectory.steps, [])
+        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+
+    def test_ranking_prefers_common_then_touching_then_rest_by_degree(self):
+        # Undirected edges: 0-1, 0-2, 1-2, 0-3, 1-4, 4-5, 4-6, 5-7, 6-7.
+        # Tiers for targets 0/1 over candidates 2..7: common {2}; touching
+        # {3 (deg 1), 4 (deg 3)} -> degree order [4, 3]; rest {5, 6, 7} all
+        # degree 2 -> id order.
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 2, 0, 3, 1, 4, 4, 5, 4, 6, 5, 7, 6, 7],
+            [1, 0, 2, 0, 2, 1, 3, 0, 4, 1, 5, 4, 6, 4, 7, 5, 7, 6],
+        ])
+        adjacency = HeuristicSampler._build_adjacency(edge_index, 8)
+
+        ranked = HeuristicSampler._rank_candidates(
+            [2, 3, 4, 5, 6, 7], 0, 1, adjacency
+        )
+
+        self.assertEqual(ranked, [2, 4, 3, 5, 6, 7])
+
+    def test_common_neighbor_beats_higher_degree_rest_node(self):
+        # Node 2 is a common neighbor of both targets (degree 2); node 3 is
+        # not adjacent to either target but has degree 4. With a budget of
+        # exactly one extra node the common-neighbor tier must win.
+        node_features = torch.eye(7, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 2, 2, 3, 3, 4, 3, 5, 3, 6],
+            [1, 0, 2, 0, 2, 1, 3, 2, 4, 3, 5, 3, 6, 3],
+        ])
+        sampler = HeuristicSampler(esm_dim=7, k_hops=2, min_size=3, max_size=3)
+
+        torch.manual_seed(0)
+        graph = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        ).final_graph
+
+        self.assertEqual(set(graph.node_index.tolist()), {0, 1, 2})
+        self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
+        self.assertNotIn((0, 1), global_edges(graph))
+
+    def test_targets_and_proxies_always_included_within_max_size(self):
+        # Both targets isolated -> two mandatory proxies (nodes 2 and 3);
+        # proxies 2/3 touch candidates 4..9 in the k=1 region.
+        node_features = torch.zeros(10, 2)
+        node_features[0] = torch.tensor([1.0, 0.3])
+        node_features[2] = torch.tensor([1.0, 0.0])
+        node_features[1] = torch.tensor([-1.0, 0.3])
+        node_features[3] = torch.tensor([-1.0, 0.0])
+        edge_index = torch.tensor([
+            [0, 1, 2, 4, 2, 5, 2, 6, 3, 7, 3, 8, 3, 9],
+            [1, 0, 4, 2, 5, 2, 6, 2, 7, 3, 8, 3, 9, 3],
+        ])
+        sampler = HeuristicSampler(esm_dim=2, k_hops=1, min_size=3, max_size=7)
+
+        for seed in range(30):
+            torch.manual_seed(seed)
+            graph = sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            ).final_graph
+            nodes = set(graph.node_index.tolist())
+            self.assertLessEqual(len(nodes), 7)
+            self.assertTrue({0, 1, 2, 3} <= nodes)
+            self.assertNotIn((0, 1), global_edges(graph))
+
+    def test_shared_adjacency_is_equivalent_to_standalone_build(self):
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ])
+        edge_index = torch.tensor([
+            [0, 1, 2, 3, 4],
+            [1, 2, 3, 4, 0],
+        ])
+        target = torch.tensor([0, 1])
+        shared = HeuristicSampler._build_adjacency(edge_index, 5)
+        sampler = HeuristicSampler(esm_dim=2, k_hops=1, min_size=3, max_size=4)
+
+        torch.manual_seed(11)
+        standalone = sampler.sample(node_features, edge_index, target, training=False)
+        torch.manual_seed(11)
+        shared_trajectory = sampler.sample(
+            node_features, edge_index, target, training=False, adjacency=shared
+        )
+
+        self.assertEqual(
+            _trajectory_signature(shared_trajectory),
+            _trajectory_signature(standalone),
+        )
+
+
+class StructuralFeaturesTest(unittest.TestCase):
+    def test_prior_initialization_and_zero_projection(self):
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, structural_features=True
+        )
+
+        self.assertEqual(
+            sampler.struct_prior.tolist(),
+            [8.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )
+        self.assertEqual(float(sampler.struct_proj.weight.abs().sum()), 0.0)
+        self.assertEqual(float(sampler.struct_proj.bias.abs().sum()), 0.0)
+        state = sampler.state_dict()
+        self.assertIn("struct_prior", state)
+        self.assertIn("struct_proj.weight", state)
+
+        plain = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
+        self.assertFalse(hasattr(plain, "struct_proj"))
+        self.assertFalse(hasattr(plain, "struct_prior"))
+
+    def test_structural_branch_keeps_legacy_rng_and_common_parameters(self):
+        torch.manual_seed(19)
+        plain = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
+        after_plain = torch.rand(4)
+        torch.manual_seed(19)
+        struct = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, structural_features=True
+        )
+        after_struct = torch.rand(4)
+
+        self.assertTrue(torch.equal(after_plain, after_struct))
+        struct_state = struct.state_dict()
+        for name, value in plain.state_dict().items():
+            self.assertTrue(torch.equal(value, struct_state[name]))
+
+    def test_topo_features_match_hand_computed_values(self):
+        # Undirected edges: 0-2, 0-3, 1-2, 1-4, 2-3, 2-5, 3-5, 4-5, 5-6.
+        # Targets 0/1; the 0-1 edge does not exist, so base rows are safe.
+        edge_index = torch.tensor([
+            [0, 2, 0, 3, 1, 2, 1, 4, 2, 3, 2, 5, 3, 5, 4, 5, 5, 6],
+            [2, 0, 3, 0, 2, 1, 4, 1, 3, 2, 5, 2, 5, 3, 5, 4, 6, 5],
+        ])
+        adjacency = SubgraphSampler._build_adjacency(edge_index, 7)
+        region = SubgraphSampler._k_hop_region([0, 1], adjacency, 1)
+        dist_u = SubgraphSampler._bounded_distances(0, region, adjacency, 2)
+        dist_v = SubgraphSampler._bounded_distances(1, region, adjacency, 2)
+        log_dmax = math.log1p(4)
+
+        actual = SubgraphSampler._topo_features(
+            [2, 3, 4, 6], 0, 1, {0, 1}, adjacency, dist_u, dist_v, 1, log_dmax
+        )
+
+        log5 = math.log(5.0)
+        log6 = math.log(6.0)
+        expected = torch.tensor([
+            # cn tg  deg          sel  du  dv  AA_u      AA_v
+            [1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0 / log5, 0.0],
+            [0.0, 1.0, math.log(4) / log5, 0.5, 1.0, 2.0, 1.0 / log6, 1.0 / log6],
+            [0.0, 1.0, math.log(3) / log5, 0.5, 2.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, math.log(2) / log5, 0.0, 2.0, 2.0, 0.0, 0.0],
+        ])
+        self.assertTrue(torch.allclose(actual, expected, atol=1e-6))
+
+    def test_prior_reproduces_heuristic_greedy_choice(self):
+        # Node 2 is a common neighbor of both targets; node 3 touches only
+        # target 0 but has the higher degree. With every learned pathway
+        # zeroed, the prior skip alone must rank the common neighbor first.
+        node_features = torch.eye(7, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 2, 0, 3, 2, 4, 3, 4, 3, 5, 3, 6],
+            [1, 0, 2, 0, 2, 1, 3, 0, 4, 2, 4, 3, 5, 3, 6, 3],
+        ])
+        sampler = SubgraphSampler(
+            esm_dim=7, hidden_dim=4, max_steps=1, structural_features=True
+        )
+        with torch.no_grad():
+            sampler.state_proj.weight.zero_()
+            sampler.neighbor_proj.weight.zero_()
+            sampler.pair_proj.weight.zero_()
+            sampler.pair_proj.bias.zero_()
+            sampler.fc[0].weight.zero_()
+            sampler.fc[0].bias.zero_()
+            sampler.fc[3].weight.zero_()
+            sampler.fc[3].bias.zero_()
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(
+            trajectory.final_graph.node_index.tolist(), [0, 1, 2]
+        )
+        self.assertEqual(
+            global_edges(trajectory.final_graph), {(0, 2), (1, 2)}
+        )
+
+    def test_structural_parameters_receive_gradients(self):
+        torch.manual_seed(3)
+        node_features = torch.zeros((4, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 1, 2],
+            [1, 0, 2, 0, 3, 0, 2, 1],
+        ])
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, structural_features=True
+        )
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=True
+        )
+        (-trajectory.steps[0].log_prob).backward()
+
+        for parameter in (sampler.struct_prior, sampler.struct_proj.weight):
+            self.assertIsNotNone(parameter.grad)
+            self.assertTrue(torch.isfinite(parameter.grad).all())
+            self.assertGreater(float(parameter.grad.abs().sum()), 0.0)
 
 
 if __name__ == "__main__":
