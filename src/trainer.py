@@ -13,7 +13,7 @@ class AlternatingTrainer:
     """
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,
-                 reinforce_gamma=1.0):
+                 reinforce_gamma=1.0, edge_relations=None):
         if not 0.0 <= reinforce_gamma <= 1.0:
             raise ValueError("reinforce_gamma must be in [0, 1]")
         # ``sampler_optimizer`` may be None when the sampler has no parameters
@@ -25,6 +25,7 @@ class AlternatingTrainer:
         self.sampler_optimizer = sampler_optimizer
         self.predictor_optimizer = predictor_optimizer
         self.reinforce_gamma = reinforce_gamma
+        self.edge_relations = edge_relations
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
                            node_index=None, adjacency=None):
@@ -46,7 +47,8 @@ class AlternatingTrainer:
         trajectories = [
             self.sampler.sample(
                 node_features, edge_index, target, node_index,
-                training=True, adjacency=adjacency
+                training=True, adjacency=adjacency,
+                edge_relations=self.edge_relations,
             )
             for target in target_nodes
         ]
@@ -149,7 +151,8 @@ class AlternatingTrainer:
             trajectories = [
                 self.sampler.sample(
                     node_features, edge_index, target, node_index,
-                    training=False, adjacency=adjacency
+                    training=False, adjacency=adjacency,
+                    edge_relations=self.edge_relations,
                 )
                 for target in target_nodes
             ]
@@ -187,22 +190,35 @@ class AlternatingTrainer:
         edges = []
         targets = []
         batches = []
+        edge_attrs = []
+        edge_dim = getattr(self.predictor, "edge_dim", None)
         offset = 0
         for graph_index, graph in enumerate(graphs):
             graph_features = node_features[graph.feature_index]
             features.append(graph_features)
             edges.append(graph.edge_index + offset)
+            if edge_dim is not None:
+                if graph.edge_attr is None:
+                    raise ValueError(
+                        "sampled graphs must provide edge_attr for a relation-aware predictor"
+                    )
+                edge_attrs.append(graph.edge_attr)
             targets.append(graph.target_nodes + offset)
             batches.append(torch.full(
                 (graph_features.shape[0],), graph_index,
                 device=graph_features.device, dtype=torch.long
             ))
             offset += graph_features.shape[0]
-        return self.predictor(
+        predictor_args = (
             torch.cat(features),
             torch.cat(edges, dim=1),
             torch.stack(targets),
             torch.cat(batches),
+        )
+        if edge_dim is None:
+            return self.predictor(*predictor_args)
+        return self.predictor(
+            *predictor_args, edge_attr=torch.cat(edge_attrs, dim=0)
         )
 
     @staticmethod

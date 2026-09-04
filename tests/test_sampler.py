@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from src.sampler import (
+    EdgeRelationLookup,
     RandomSubsetSampler,
     StaticNeighborhoodSampler,
     SubgraphSampler,
@@ -17,6 +18,29 @@ def global_edges(graph):
         target = int(graph.node_index[target])
         edges.add(tuple(sorted((source, target))))
     return edges
+
+
+class EdgeRelationLookupTest(unittest.TestCase):
+    def test_unknown_edges_are_zero_and_direction_does_not_matter(self):
+        first = torch.tensor([1.0, 0.0, 1.0])
+        second = torch.tensor([0.0, 1.0, 0.0])
+        lookup = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 2], [1, 3]]),
+            torch.stack((first, second)),
+            num_nodes=4,
+        )
+
+        actual = lookup.lookup([[2, 0], [0, 1], [3, 1]])
+
+        self.assertTrue(torch.equal(actual[0], first))
+        self.assertTrue(torch.equal(actual[1], torch.zeros(3)))
+        self.assertTrue(torch.equal(actual[2], second))
+
+    def test_duplicate_undirected_edges_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unique"):
+            EdgeRelationLookup.from_pairs(
+                torch.tensor([[0, 1], [1, 0]]), torch.ones((2, 7)), num_nodes=2
+            )
 
 
 def _graph_signature(graph):
@@ -35,6 +59,40 @@ def _trajectory_signature(trajectory):
 
 
 class SubgraphSamplerTest(unittest.TestCase):
+    def test_step_graph_relations_align_with_directed_edges(self):
+        node_features = torch.eye(3, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 2],
+            [1, 0, 2, 0, 2, 1],
+        ])
+        target_relation = torch.tensor([1., 0., 0., 0., 0., 0., 0.])
+        context_relation = torch.tensor([0., 0., 1., 0., 1., 0., 0.])
+        relations = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 1], [0, 2]]),
+            torch.stack((target_relation, context_relation)),
+            num_nodes=3,
+        )
+        sampler = SubgraphSampler(esm_dim=3, hidden_dim=2, max_steps=1)
+
+        trajectory = sampler.sample(
+            node_features,
+            edge_index,
+            torch.tensor([0, 1]),
+            training=False,
+            edge_relations=relations,
+        )
+
+        self.assertEqual(trajectory.baseline_graph.edge_attr.shape, (0, 7))
+        self.assertTrue(torch.equal(
+            trajectory.final_graph.edge_attr,
+            torch.stack((
+                context_relation,
+                context_relation,
+                torch.zeros(7),
+                torch.zeros(7),
+            )),
+        ))
+
     def test_action_score_uses_residual_pair_projection(self):
         sampler = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
 
@@ -44,6 +102,149 @@ class SubgraphSamplerTest(unittest.TestCase):
         self.assertEqual(sampler.fc[-1].out_features, 1)
         self.assertFalse(hasattr(sampler, "fixed_num"))
         self.assertEqual(sampler.k_hops, 1)
+
+    def test_candidate_relations_are_or_aggregated_over_selected_edges(self):
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, relation_dim=3
+        )
+        adjacency = sampler._build_adjacency(
+            torch.tensor([
+                [0, 2, 1, 2, 1, 3],
+                [2, 0, 2, 1, 3, 1],
+            ]),
+            5,
+        )
+        relations = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 2], [1, 2], [1, 3]]),
+            torch.tensor([
+                [1., 0., 0.],
+                [0., 1., 0.],
+                [0., 0., 1.],
+            ]),
+            num_nodes=5,
+        )
+
+        actual = sampler._candidate_relation_features(
+            [2, 3, 4], [0, 1], adjacency, relations
+        )
+
+        self.assertTrue(torch.equal(actual, torch.tensor([
+            [1., 1., 0.],
+            [0., 0., 1.],
+            [0., 0., 0.],
+        ])))
+
+    def test_relation_features_change_greedy_action_without_target_leakage(self):
+        node_features = torch.zeros((4, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 1, 2],
+            [1, 0, 2, 0, 3, 0, 2, 1],
+        ])
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, relation_dim=2
+        )
+        with torch.no_grad():
+            sampler.state_proj.weight.zero_()
+            sampler.neighbor_proj.weight.zero_()
+            sampler.relation_proj.weight.zero_()
+            sampler.relation_proj.weight[0, 0] = 1.0
+            sampler.pair_proj.weight.zero_()
+            sampler.pair_proj.bias.zero_()
+            sampler.pair_proj.weight[0, 4] = 1.0
+            sampler.fc[0].weight.zero_()
+            sampler.fc[0].bias.zero_()
+            sampler.fc[0].weight[0, 0] = 1.0
+            sampler.fc[0].weight[1, 0] = -1.0
+            sampler.fc[3].weight.copy_(torch.tensor([[1.0, -1.0]]))
+            sampler.fc[3].bias.zero_()
+
+        # The target relation is present in both lookups, but the safe
+        # adjacency removes 0-1 before policy features are constructed.
+        target_relation = torch.tensor([0., 1.])
+        relation_on_two = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 1], [0, 2]]),
+            torch.stack((target_relation, torch.tensor([1., 0.]))),
+            num_nodes=4,
+        )
+        relation_on_three = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 1], [0, 3]]),
+            torch.stack((target_relation, torch.tensor([1., 0.]))),
+            num_nodes=4,
+        )
+
+        first = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False,
+            edge_relations=relation_on_two,
+        )
+        second = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=False,
+            edge_relations=relation_on_three,
+        )
+
+        self.assertEqual(first.final_graph.node_index.tolist()[-1], 2)
+        self.assertEqual(second.final_graph.node_index.tolist()[-1], 3)
+
+    def test_relation_projection_receives_policy_gradient(self):
+        torch.manual_seed(7)
+        node_features = torch.zeros((4, 2))
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 0, 3, 1, 2],
+            [1, 0, 2, 0, 3, 0, 2, 1],
+        ])
+        relations = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 2], [0, 3]]),
+            torch.tensor([[1., 0.], [0., 1.]]),
+            num_nodes=4,
+        )
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, relation_dim=2
+        )
+
+        trajectory = sampler.sample(
+            node_features, edge_index, torch.tensor([0, 1]), training=True,
+            edge_relations=relations,
+        )
+        (-trajectory.steps[0].log_prob).backward()
+
+        gradient = sampler.relation_proj.weight.grad
+        self.assertIsNotNone(gradient)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(float(gradient.abs().sum()), 0.0)
+
+    def test_relation_branch_preserves_legacy_rng_and_common_parameters(self):
+        torch.manual_seed(19)
+        plain = SubgraphSampler(esm_dim=2, hidden_dim=4, max_steps=1)
+        after_plain = torch.rand(4)
+        torch.manual_seed(19)
+        relation_aware = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, relation_dim=7
+        )
+        after_relation = torch.rand(4)
+
+        relation_state = relation_aware.state_dict()
+        for name, value in plain.state_dict().items():
+            self.assertTrue(torch.equal(value, relation_state[name]))
+        self.assertTrue(torch.equal(after_plain, after_relation))
+
+    def test_relation_aware_sampler_validates_lookup(self):
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=1, relation_dim=2
+        )
+        node_features = torch.zeros((3, 2))
+        edge_index = torch.tensor([[0, 1, 0, 2], [1, 0, 2, 0]])
+
+        with self.assertRaisesRegex(ValueError, "required"):
+            sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False
+            )
+        wrong_dim = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 2]]), torch.ones((1, 3)), num_nodes=3
+        )
+        with self.assertRaisesRegex(ValueError, "dimension 2"):
+            sampler.sample(
+                node_features, edge_index, torch.tensor([0, 1]), training=False,
+                edge_relations=wrong_dim,
+            )
 
     def test_negative_k_hops_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "k_hops"):
@@ -237,6 +438,65 @@ class SubgraphSamplerTest(unittest.TestCase):
 
 
 class StaticNeighborhoodSamplerTest(unittest.TestCase):
+    def test_only_visible_non_target_edges_receive_relations(self):
+        # 0-1 is the target and must disappear. Relation visibility contains
+        # target 0-1 and train edge 0-2, but not held-out topology edge 1-3.
+        node_features = torch.eye(4, dtype=torch.float32)
+        edge_index = torch.tensor([
+            [0, 1, 0, 2, 1, 3],
+            [1, 0, 2, 0, 3, 1],
+        ])
+        target_relation = torch.tensor([1., 0., 0., 0., 0., 0., 0.])
+        train_relation = torch.tensor([0., 1., 1., 0., 0., 0., 0.])
+        relations = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 1], [0, 2]]),
+            torch.stack((target_relation, train_relation)),
+            num_nodes=4,
+        )
+        sampler = StaticNeighborhoodSampler(esm_dim=4, k_hops=1)
+
+        graph = sampler.sample(
+            node_features,
+            edge_index,
+            torch.tensor([0, 1]),
+            training=False,
+            edge_relations=relations,
+        ).final_graph
+
+        attributed_edges = {}
+        for edge, relation in zip(graph.edge_index.t(), graph.edge_attr):
+            source = int(graph.node_index[int(edge[0])])
+            target = int(graph.node_index[int(edge[1])])
+            attributed_edges[(source, target)] = relation
+        self.assertNotIn((0, 1), attributed_edges)
+        self.assertNotIn((1, 0), attributed_edges)
+        self.assertTrue(torch.equal(attributed_edges[(0, 2)], train_relation))
+        self.assertTrue(torch.equal(attributed_edges[(2, 0)], train_relation))
+        self.assertTrue(torch.equal(attributed_edges[(1, 3)], torch.zeros(7)))
+        self.assertTrue(torch.equal(attributed_edges[(3, 1)], torch.zeros(7)))
+
+    def test_virtual_proxy_edges_receive_zero_relations(self):
+        node_features = torch.tensor([
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+        ])
+        edge_index = torch.tensor([[0, 1], [1, 0]])
+        relations = EdgeRelationLookup.from_pairs(
+            torch.tensor([[0, 1]]), torch.ones((1, 7)), num_nodes=3
+        )
+        sampler = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
+
+        graph = sampler.sample(
+            node_features,
+            edge_index,
+            torch.tensor([0, 1]),
+            training=False,
+            edge_relations=relations,
+        ).final_graph
+
+        self.assertTrue(torch.equal(graph.edge_attr, torch.zeros_like(graph.edge_attr)))
+
     def test_has_no_learnable_parameters_and_validates_k_hops(self):
         sampler = StaticNeighborhoodSampler(esm_dim=2, hidden_dim=4, k_hops=1)
 

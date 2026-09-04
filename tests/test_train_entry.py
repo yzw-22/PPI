@@ -2,10 +2,58 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from src.train_shs27k import parse_args
+import torch
+
+from src.ppi_graph import PPIGraph
+from src.train_shs27k import _build_training_edge_relations, parse_args
 
 
 class TrainEntrySamplerArgumentsTest(unittest.TestCase):
+    def test_edge_relations_are_opt_in(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            args = parse_args()
+            self.assertFalse(args.use_edge_relations)
+            self.assertFalse(args.use_sampler_edge_relations)
+        with patch.object(
+            sys, "argv", ["train_shs27k", "--use-edge-relations"]
+        ):
+            self.assertTrue(parse_args().use_edge_relations)
+        with patch.object(
+            sys, "argv", ["train_shs27k", "--use-sampler-edge-relations"]
+        ):
+            self.assertTrue(parse_args().use_sampler_edge_relations)
+
+    def test_sampler_relations_require_rl_sampler(self):
+        with patch.object(
+            sys,
+            "argv",
+            ["train_shs27k", "--sampler", "static",
+             "--use-sampler-edge-relations"],
+        ):
+            with self.assertRaises(SystemExit):
+                parse_args()
+
+    def test_relation_lookup_contains_only_training_edges(self):
+        graph = PPIGraph.__new__(PPIGraph)
+        graph.device = torch.device("cpu")
+        graph.ppi = torch.tensor([[0, 1], [1, 2], [2, 3]])
+        graph.ppi_labels = torch.tensor([
+            [1., 0., 0., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 0., 0., 0.],
+            [0., 0., 1., 0., 0., 0., 0.],
+        ])
+        graph.split_index = {
+            "train_index": [0],
+            "val_index": [1],
+            "test_index": [2],
+        }
+
+        lookup = _build_training_edge_relations(graph, torch.arange(4))
+
+        actual = lookup.lookup([[0, 1], [1, 2], [2, 3]])
+        self.assertTrue(torch.equal(actual[0], graph.ppi_labels[0]))
+        self.assertTrue(torch.equal(actual[1:], torch.zeros((2, 7))))
+
     def test_fixed_num_is_rejected_after_removal(self):
         with patch.object(
             sys,

@@ -28,6 +28,12 @@
 - **split 只做两件事**：① 决定各阶段的目标 PPI 对（`get_ppi_indices` 提取
   train/val/test targets 与 labels）；② 提供训练节点集合，用于测试集
   BS/ES/NS 可见性分组（`train_node_index`，来自 `build_graph("train")`）。
+- 可选 `--use-edge-relations` 将 train split 边的 7 维 multi-hot relation 输入
+  Predictor GAT；val/test 边仍保留为无标签拓扑，但 relation 全零，虚拟 proxy
+  边与 self-loop 也为全零。该开关默认关闭，以保持历史实验可复现。
+- 可选 `--use-sampler-edge-relations` 独立将 train-edge relation 输入 RL 动作
+  打分：候选节点连接当前已选子图的关系按逐维 max/OR 聚合、投影后加到 candidate
+  表示。目标边先从安全邻接删除，held-out 与 proxy 边 relation 为零。
 - **不变量（必须保持）**：
   - 目标边 `(u,v)` 与 `(v,u)` 在每次采样前从安全邻接中排除（
     `_TargetSafeAdjacency` 惰性视图，共享邻接不被修改），且不进入 `G_0` 与
@@ -38,9 +44,9 @@
   - 候选限制在距 `G_0` 种子不超过 `k_hops`（默认 1）的安全区域内；`max_steps`
     （默认 10）只限制动作次数，无 STOP 动作；
   - Predictor 训练与评估均使用 `final_graph`（无动作时即 `G_0`）；
-  - **推理特征只含 ESM embedding 与无标签拓扑**：`edge_label` 是公共返回字段
-    但训练流程从不读取，标签只作为 train/val/test 目标对的 BCE 目标——全图
-    含 val/test 边作为拓扑不构成标签泄漏；
+  - 默认模式的推理特征只含 ESM embedding 与无标签拓扑；relation-aware 模式
+    额外读取 train split 边标签。val/test relation 从不进入关系查询表，且当前
+    查询目标边在 edge feature 物化前已删除；
   - 奖励/return-to-go/advantage 保持 FP32；F1 阈值固定 0.5。
 - 说明：`build_graph(split_name)` 的 split-local 构建保留（节点集合查询、测试、
   外部使用），但训练入口不再以它作为 KG。
@@ -61,10 +67,14 @@
 动作打分：state/candidate 独立投影，拼接映射回 hidden_dim 并加回投影 state
 （残差）→ `Linear(d→d//2) → LayerNorm → Tanh → Linear(d//2→1)` → softmax；
 训练记录 Categorical `log_prob`，评估/更新用 greedy argmax。
+启用 `--use-sampler-edge-relations` 时，candidate 投影额外融合候选到已选子图的
+7 维关系聚合；该开关仅适用于 `--sampler rl`，可与 Predictor 开关独立消融。
 
 超参默认：`--epochs 10 --batch-size 32 --eval-batch-size 64 --hidden-dim 256
 --max-steps 10 --k-hops 1 --gnn-layers 2 --heads 4 --dropout 0.1
---sampler-lr 1e-4 --predictor-lr 1e-3 --reinforce-gamma 1.0`。
+--sampler-lr 1e-4 --predictor-lr 1e-3 --reinforce-gamma 1.0`；relation-aware
+Predictor 与 Sampler 分别通过 `--use-edge-relations` 和
+`--use-sampler-edge-relations` 显式开启。
 历史推荐配置（split-local 时代，见 §6）：`h128 / γ0.9 / 20ep / ms5`。
 
 ## 4. 评估协议
@@ -141,7 +151,9 @@
   - 长训练：40ep 为成本-收益甜点（SHS148k dfs ms0 valMacAUC 0.8557±0.0004），
     h256 vs h128 无显著差异；k_hops 2 纯净配对无显著收益，默认 k1。
 - 纪律（仍然适用）：指标方差大（MacF1 0.36~0.52），结论须多 seed 配对均值±std；
-  推理特征禁止任何标签信息；报告结果须标注数据集与 split。
+  默认模式推理特征不含任何标签信息（relation-aware 模式仅在显式开启
+  `--use-edge-relations`/`--use-sampler-edge-relations` 时读取 train 边标签，
+  val/test 与目标边标签从不进入，见 §2）；报告结果须标注数据集与 split。
 - 建议命令（配置起点，全图 KG 自动生效）：
 
 ```bash

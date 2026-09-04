@@ -14,19 +14,26 @@ class PPIPredictor(nn.Module):
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, num_layers=3, heads=4,
-                 dropout=0.1):
+                 dropout=0.1, edge_dim=None):
         super().__init__()
         if hidden_dim % heads:
             raise ValueError("hidden_dim must be divisible by heads")
         if num_layers < 1:
             raise ValueError("num_layers must be positive")
+        if edge_dim is not None and edge_dim < 1:
+            raise ValueError("edge_dim must be positive when provided")
 
         self.esm_dim = esm_dim
+        self.edge_dim = edge_dim
         self.input_proj = nn.Sequential(
             nn.Linear(esm_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
+        )
+        conv_kwargs = (
+            {"edge_dim": edge_dim, "fill_value": 0.0}
+            if edge_dim is not None else {}
         )
         self.convs = nn.ModuleList([
             GATConv(
@@ -36,6 +43,7 @@ class PPIPredictor(nn.Module):
                 concat=True,
                 dropout=dropout,
                 add_self_loops=True,
+                **conv_kwargs,
             )
             for _ in range(num_layers)
         ])
@@ -48,7 +56,8 @@ class PPIPredictor(nn.Module):
             nn.Linear(hidden_dim, 7),
         )
 
-    def forward(self, node_features, edge_index, target_nodes, batch=None):
+    def forward(self, node_features, edge_index, target_nodes, batch=None,
+                edge_attr=None):
         """Return seven relation logits for one graph.
 
         ``target_nodes`` contains the two local node indices corresponding to
@@ -70,6 +79,20 @@ class PPIPredictor(nn.Module):
 
         node_features = node_features.to(dtype=self.input_proj[0].weight.dtype)
         edge_index = edge_index.to(device=node_features.device, dtype=torch.long)
+        if self.edge_dim is None:
+            if edge_attr is not None:
+                raise ValueError("edge_attr requires edge_dim to be configured")
+        else:
+            if edge_attr is None:
+                raise ValueError("edge_attr is required when edge_dim is configured")
+            edge_attr = torch.as_tensor(
+                edge_attr, device=node_features.device, dtype=node_features.dtype
+            )
+            expected_shape = (edge_index.shape[1], self.edge_dim)
+            if edge_attr.ndim != 2 or edge_attr.shape != expected_shape:
+                raise ValueError(
+                    f"edge_attr must have shape [E, {self.edge_dim}]"
+                )
         if batch is None:
             batch = torch.zeros(
                 node_features.shape[0], device=node_features.device, dtype=torch.long
@@ -81,7 +104,7 @@ class PPIPredictor(nn.Module):
 
         h = self.input_proj(node_features)
         for conv, norm in zip(self.convs, self.norms):
-            updated = conv(h, edge_index)
+            updated = conv(h, edge_index, edge_attr=edge_attr)
             h = norm(h + self.dropout(F.elu(updated)))
 
         u, v = h[target_nodes[:, 0]], h[target_nodes[:, 1]]
@@ -93,11 +116,14 @@ class PPIPredictor(nn.Module):
         logits = self.output(pair)
         return logits[0] if single_graph else logits
 
-    def predict_proba(self, node_features, edge_index, target_nodes):
+    def predict_proba(self, node_features, edge_index, target_nodes,
+                      edge_attr=None):
         """Return sigmoid probabilities for inference.
 
         This compatibility wrapper intentionally mirrors the historical public
         API.  Batched calls should use :meth:`forward` followed by sigmoid when
         a ``batch`` vector is required.
         """
-        return torch.sigmoid(self(node_features, edge_index, target_nodes))
+        return torch.sigmoid(self(
+            node_features, edge_index, target_nodes, edge_attr=edge_attr
+        ))

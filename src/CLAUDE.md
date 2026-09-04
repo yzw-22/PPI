@@ -13,10 +13,16 @@
 
 ### 输入与安全性
 
-- `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None)` 的特征、节点和边必须来自同一张图（训练/验证/测试共用全图）。
+- `sample(node_features, edge_index, target_nodes, node_index=None, training=None, adjacency=None, edge_relations=None)` 的特征、节点和边必须来自同一张图（训练/验证/测试共用全图）。
 - `node_index` 必须严格递增，用于二分定位 global target 到 local 行号。
 - 目标边的两个方向在每个 target 采样前从安全邻接中排除。
 - 代理只能来自当前图的非目标节点（全图即全部蛋白）；两个目标可以共享代理。
+- `EdgeRelationLookup` 只收录 train split 边；采样图的 val/test 拓扑边和虚拟
+  proxy 边使用全零 7 维 relation，正反方向 relation 相同。目标边删除后才物化
+  `edge_attr`，不会暴露当前目标标签。
+- `relation_dim` 启用 RL relation-aware 打分；每个候选到当前已选节点的可见关系
+  逐维 max/OR 聚合，经无 bias 投影后加到 candidate 表示。聚合只查询目标安全
+  adjacency，因此目标边 relation 不会进入策略。
 
 ### G0 与轨迹
 
@@ -67,6 +73,10 @@ Predictor 更新阶段：
 1. 冻结 Sampler，使用 greedy trajectory。
 2. 只使用 `final_graph` 训练 Predictor；无动作时使用 `G_0`。
 3. 使用 BCE with logits 更新 Predictor。
+
+`--use-edge-relations` 显式开启 Predictor 的 `GATConv(edge_dim=7)`；
+`--use-sampler-edge-relations` 独立开启 RL Sampler relation 打分。两者默认关闭，
+self-loop relation 固定为零，Sampler relation 开关不允许用于非 RL sampler。
 
 ## PPIPredictor
 

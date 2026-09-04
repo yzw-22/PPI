@@ -21,6 +21,12 @@
 - SHS27k 支持 `bfs/dfs/random`，SHS148k 支持 `dfs/random`，STRING 支持 `dfs`；非法组合在参数解析阶段报错。
 - split 只决定各阶段的目标 PPI 对与训练节点集合；Sampler、代理候选、frontier 和 Predictor 输入全部使用全图的节点与边。
 - 每次采样前从安全邻接中移除目标边 `(u,v)` 和 `(v,u)`，避免标签泄漏。
+- `--use-edge-relations` 可选开启 relation-aware GAT：只有 train split 边携带
+  7 维 multi-hot relation；val/test 拓扑边、虚拟 proxy 边和 GAT self-loop 的
+  relation 恒为全零。查询目标边仍先被完全移除，因此自身标签不会进入输入。
+- `--use-sampler-edge-relations` 独立开启 RL Sampler 的 relation-aware 动作打分：
+  候选节点与当前已选节点间的可见关系按逐维 max/OR 聚合、投影并加到 candidate
+  表示。该开关只适用于 `--sampler rl`，可与 Predictor relation 开关独立消融。
 
 ## 当前 Sampler 设计
 
@@ -40,6 +46,8 @@
   投影 state（残差），再过 LN/Tanh 打分头：
   `Linear(2*hidden_dim→hidden_dim)（+state 残差）→ Linear(hidden_dim→hidden_dim//2)
   → LayerNorm → Tanh → Linear(hidden_dim//2→1)`。
+- 开启 Sampler relation 后，candidate 投影会先加上候选到当前已选子图的 7 维
+  relation 聚合投影；未知、held-out、目标边及 proxy relation 均为零。
 
 ## RL 与训练
 
@@ -67,6 +75,8 @@ L_{policy}=-\log\pi(a_t|s_t)\operatorname{stopgrad}(\hat A_t),
 
 - Sampler 更新时 Predictor 冻结，用 `G_0` 和所有 step graph 的 BCE loss 计算增量奖励；同一 batch 的全部动作 step 对 detached return-to-go 做标准化。
 - Predictor 更新时 Sampler 冻结，只使用每条贪心轨迹的 `final_graph`；无动作时 `final_graph` 就是 `G_0`。
+- Predictor 与 Sampler 的 relation-aware 模式分别由两个独立开关控制，默认均关闭
+  以保持历史实验可复现。
 - F1 使用固定阈值 `0.5`。
 - 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态，训练结束后仅在最佳状态上测试一次。
 - 指定 `--checkpoint-dir` 时保存最佳 checkpoint；未指定时将最佳 Sampler/Predictor 状态保存在内存中。
@@ -82,6 +92,7 @@ python -m src.train_shs27k \
   --hidden-dim 256 \
   --k-hops 1 \
   --max-steps 10 \
+  --use-edge-relations \
   --reinforce-gamma 0.9
 ```
 

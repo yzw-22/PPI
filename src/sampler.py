@@ -41,6 +41,67 @@ class SampledGraph:
     feature_index: torch.Tensor
     edge_index: torch.Tensor
     target_nodes: torch.Tensor
+    edge_attr: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
+class EdgeRelationLookup:
+    """Sparse relation lookup containing visible undirected edges only.
+
+    The training entry inserts only train-split edges. Missing entries therefore
+    cover validation/test topology and virtual proxy edges and map to zeros.
+    """
+
+    keys: torch.Tensor
+    values: torch.Tensor
+    num_nodes: int
+
+    @classmethod
+    def from_pairs(cls, pairs, values, num_nodes):
+        values = torch.as_tensor(values, dtype=torch.float32)
+        pairs = torch.as_tensor(pairs, dtype=torch.long, device=values.device)
+        if pairs.ndim != 2 or pairs.shape[1] != 2:
+            raise ValueError("pairs must have shape [E, 2]")
+        if values.ndim != 2 or values.shape[0] != pairs.shape[0]:
+            raise ValueError("values must have shape [E, relation_dim]")
+        if num_nodes <= 0:
+            raise ValueError("num_nodes must be positive")
+        if pairs.numel() and (pairs.min() < 0 or pairs.max() >= num_nodes):
+            raise ValueError("pairs contain an out-of-range node")
+
+        source = torch.minimum(pairs[:, 0], pairs[:, 1])
+        target = torch.maximum(pairs[:, 0], pairs[:, 1])
+        keys = source * num_nodes + target
+        keys, order = torch.sort(keys)
+        values = values[order]
+        if keys.numel() > 1 and torch.any(keys[1:] == keys[:-1]):
+            raise ValueError("pairs must contain unique undirected edges")
+        return cls(keys, values, int(num_nodes))
+
+    @property
+    def relation_dim(self):
+        return self.values.shape[1]
+
+    def lookup(self, pairs):
+        """Return relation rows for local-id pairs; unknown edges are zero."""
+        pairs = torch.as_tensor(pairs, dtype=torch.long, device=self.keys.device)
+        if pairs.numel() == 0:
+            return self.values.new_zeros((0, self.relation_dim))
+        if pairs.ndim != 2 or pairs.shape[1] != 2:
+            raise ValueError("pairs must have shape [E, 2]")
+        source = torch.minimum(pairs[:, 0], pairs[:, 1])
+        target = torch.maximum(pairs[:, 0], pairs[:, 1])
+        query = source * self.num_nodes + target
+        result = self.values.new_zeros((pairs.shape[0], self.relation_dim))
+        # With no stored keys every query is a miss and stays zero; the empty
+        # lookup is never indexed (its keys tensor cannot be subscripted).
+        if self.keys.numel():
+            positions = torch.searchsorted(self.keys, query)
+            matched = positions < self.keys.numel()
+            safe_positions = positions.clamp_max(self.keys.numel() - 1)
+            matched &= self.keys[safe_positions] == query
+            result[matched] = self.values[safe_positions[matched]]
+        return result
 
 
 @dataclass
@@ -80,16 +141,19 @@ class SubgraphSampler(nn.Module):
     """
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 k_hops=1):
+                 k_hops=1, relation_dim=None):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
         if k_hops < 0:
             raise ValueError("k_hops must be non-negative")
+        if relation_dim is not None and relation_dim <= 0:
+            raise ValueError("relation_dim must be positive when provided")
 
         self.esm_dim = esm_dim
         self.max_steps = max_steps
         self.k_hops = k_hops
+        self.relation_dim = relation_dim
         # State and candidate nodes use independent projections before their
         # pairwise action score is computed.
         self.state_proj = nn.Linear(esm_dim, hidden_dim, bias=False)
@@ -110,9 +174,19 @@ class SubgraphSampler(nn.Module):
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.zeros_(layer.bias)
+        self.relation_proj = None
+        if relation_dim is not None:
+            # Do not perturb initialization of downstream modules (notably the
+            # Predictor) when enabling this optional branch. This keeps seeded
+            # relation ablations paired on all pre-existing parameters.
+            with torch.random.fork_rng(devices=[]):
+                self.relation_proj = nn.Linear(
+                    relation_dim, hidden_dim, bias=False
+                )
+                nn.init.xavier_uniform_(self.relation_proj.weight)
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
-               training=None, adjacency=None):
+               training=None, adjacency=None, edge_relations=None):
         """Sample one trajectory around ``target_nodes``.
 
         Args:
@@ -125,6 +199,8 @@ class SubgraphSampler(nn.Module):
                 ``frozenset``, see :meth:`_build_adjacency`).  When given, the
                 target edge is excluded lazily per target; when omitted it is
                 built from ``edge_index`` with the target edge already removed.
+            edge_relations: optional visible-edge relation lookup. Relations
+                absent from the lookup and virtual edges receive all-zero rows.
 
         Returns:
             ``SamplingTrajectory``.  Each step contains the graph *after* its
@@ -138,6 +214,15 @@ class SubgraphSampler(nn.Module):
         adjacency = self._prepare_adjacency(
             edge_index, target_local, node_features.shape[0], adjacency
         )
+        if self.relation_dim is not None:
+            if edge_relations is None:
+                raise ValueError(
+                    "edge_relations are required for a relation-aware sampler"
+                )
+            if edge_relations.relation_dim != self.relation_dim:
+                raise ValueError(
+                    f"edge_relations must have dimension {self.relation_dim}"
+                )
 
         u, v = target_local.tolist()
         selected = [u, v]
@@ -149,7 +234,7 @@ class SubgraphSampler(nn.Module):
         # proxies. Safe one-hop neighbors are introduced by frontier actions.
         self._add_real_edges(selected, graph_edges, adjacency)
         baseline_graph = self._make_graph(
-            selected, graph_edges, target_local, node_index
+            selected, graph_edges, target_local, node_index, edge_relations
         )
         allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
 
@@ -184,6 +269,16 @@ class SubgraphSampler(nn.Module):
                     dtype=self.neighbor_proj.weight.dtype
                 )
             )
+            if self.relation_proj is not None:
+                candidate_relations = self._candidate_relation_features(
+                    candidates, selected, adjacency, edge_relations
+                ).to(
+                    device=candidate_repr.device,
+                    dtype=self.relation_proj.weight.dtype,
+                )
+                candidate_repr = (
+                    candidate_repr + self.relation_proj(candidate_relations)
+                )
             state_repr = state_repr.expand(candidate_repr.shape[0], -1)
             attention_input = torch.cat((state_repr, candidate_repr), dim=-1)
             # Residual-style pair mixing: map the concatenated pair back to
@@ -215,7 +310,7 @@ class SubgraphSampler(nn.Module):
 
         step_graphs = self._make_graphs(
             [(selected, edges) for _, selected, edges in step_records],
-            target_local, node_index,
+            target_local, node_index, edge_relations,
         )
         steps = [
             SamplingStep(graph, log_prob)
@@ -223,11 +318,48 @@ class SubgraphSampler(nn.Module):
         ]
         return SamplingTrajectory(baseline_graph, steps)
 
+    def _candidate_relation_features(self, candidates, selected, adjacency,
+                                     edge_relations):
+        """Aggregate visible candidate-to-state relations with multi-hot OR.
+
+        ``edge_relations`` is validated by :meth:`sample` before this helper
+        runs.  Only edges present in the target-safe adjacency are queried, so
+        the current target edge can never contribute. Unknown held-out and
+        virtual edges are represented by the lookup's all-zero fallback.
+        """
+        relation_dim = edge_relations.relation_dim
+        result = edge_relations.values.new_zeros(
+            (len(candidates), relation_dim)
+        )
+        pairs = []
+        owners = []
+        for candidate_index, candidate in enumerate(candidates):
+            for node in selected:
+                if candidate in adjacency[node]:
+                    pairs.append((node, candidate))
+                    owners.append(candidate_index)
+        if not pairs:
+            return result
+
+        values = edge_relations.lookup(pairs)
+        # A candidate may touch several selected nodes and each PPI can itself
+        # be multi-label. Element-wise max is therefore the logical OR over all
+        # visible incident relation types.
+        for candidate_index in range(len(candidates)):
+            positions = [
+                index for index, owner in enumerate(owners)
+                if owner == candidate_index
+            ]
+            if positions:
+                result[candidate_index] = values[positions].amax(dim=0)
+        return result
+
     def forward(self, node_features, edge_index, target_nodes, node_index=None,
-                training=None, adjacency=None):
+                training=None, adjacency=None, edge_relations=None):
         """Alias :meth:`sample` so the sampler follows the PyTorch module API."""
         return self.sample(
-            node_features, edge_index, target_nodes, node_index, training, adjacency
+            node_features, edge_index, target_nodes, node_index, training,
+            adjacency, edge_relations,
         )
 
     def _prepare_inputs(self, node_features, edge_index, target_nodes, node_index):
@@ -347,12 +479,14 @@ class SubgraphSampler(nn.Module):
         return scores.argmax()
 
     @staticmethod
-    def _make_graph(selected, graph_edges, target_local, node_index):
+    def _make_graph(selected, graph_edges, target_local, node_index,
+                    edge_relations=None):
         device = node_index.device
         selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
         local = {global_node: i for i, global_node in enumerate(selected)}
         directed_edges = []
-        for source, target in sorted(graph_edges):
+        ordered_edges = sorted(graph_edges)
+        for source, target in ordered_edges:
             directed_edges.extend(((local[source], local[target]),
                                    (local[target], local[source])))
         if directed_edges:
@@ -364,12 +498,18 @@ class SubgraphSampler(nn.Module):
             device=device,
             dtype=torch.long,
         )
+        edge_attr = None
+        if edge_relations is not None:
+            edge_attr = edge_relations.lookup(ordered_edges).repeat_interleave(
+                2, dim=0
+            ).to(device)
         return SampledGraph(
-            node_index[selected_tensor], selected_tensor, edge_index, target_nodes
+            node_index[selected_tensor], selected_tensor, edge_index, target_nodes,
+            edge_attr,
         )
 
     @staticmethod
-    def _make_graphs(snapshots, target_local, node_index):
+    def _make_graphs(snapshots, target_local, node_index, edge_relations=None):
         """Materialize consecutive step graphs for one trajectory.
 
         Step snapshots contain monotonically growing ``selected`` node lists,
@@ -385,7 +525,8 @@ class SubgraphSampler(nn.Module):
                 local[node] = len(local)
             selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
             directed_edges = []
-            for source, target in sorted(graph_edges):
+            ordered_edges = sorted(graph_edges)
+            for source, target in ordered_edges:
                 directed_edges.extend(((local[source], local[target]),
                                        (local[target], local[source])))
             if directed_edges:
@@ -399,8 +540,14 @@ class SubgraphSampler(nn.Module):
                 device=device,
                 dtype=torch.long,
             )
+            edge_attr = None
+            if edge_relations is not None:
+                edge_attr = edge_relations.lookup(ordered_edges).repeat_interleave(
+                    2, dim=0
+                ).to(device)
             graphs.append(SampledGraph(
-                node_index[selected_tensor], selected_tensor, edge_index, target_nodes
+                node_index[selected_tensor], selected_tensor, edge_index,
+                target_nodes, edge_attr,
             ))
         return graphs
 
@@ -434,7 +581,7 @@ class StaticNeighborhoodSampler(SubgraphSampler):
         self.k_hops = k_hops
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
-               training=None, adjacency=None):
+               training=None, adjacency=None, edge_relations=None):
         """Return one deterministic static-neighborhood trajectory.
 
         The ``training`` flag is ignored: the graph is always the full safe
@@ -458,7 +605,9 @@ class StaticNeighborhoodSampler(SubgraphSampler):
         # deterministic order) and keep all safe edges induced by it.
         selected = selected + sorted(allowed - set(selected))
         self._add_real_edges(selected, graph_edges, adjacency)
-        graph = self._make_graph(selected, graph_edges, target_local, node_index)
+        graph = self._make_graph(
+            selected, graph_edges, target_local, node_index, edge_relations
+        )
         return SamplingTrajectory(graph, [])
 
 
@@ -497,7 +646,7 @@ class RandomSubsetSampler(SubgraphSampler):
         self.max_size = max_size
 
     def sample(self, node_features, edge_index, target_nodes, node_index=None,
-               training=None, adjacency=None):
+               training=None, adjacency=None, edge_relations=None):
         """Return one random-subset trajectory (deterministic under the seed).
 
         The ``training`` flag is ignored: the target size is drawn uniformly
@@ -526,5 +675,7 @@ class RandomSubsetSampler(SubgraphSampler):
             chosen = torch.randperm(len(candidates))[:k_extra].tolist()
             selected = selected + [candidates[index] for index in chosen]
         self._add_real_edges(selected, graph_edges, adjacency)
-        graph = self._make_graph(selected, graph_edges, target_local, node_index)
+        graph = self._make_graph(
+            selected, graph_edges, target_local, node_index, edge_relations
+        )
         return SamplingTrajectory(graph, [])

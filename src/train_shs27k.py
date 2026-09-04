@@ -19,7 +19,12 @@ from sklearn.metrics import f1_score, roc_auc_score
 
 from .ppi_graph import PPIGraph
 from .predictor import PPIPredictor
-from .sampler import RandomSubsetSampler, StaticNeighborhoodSampler, SubgraphSampler
+from .sampler import (
+    EdgeRelationLookup,
+    RandomSubsetSampler,
+    StaticNeighborhoodSampler,
+    SubgraphSampler,
+)
 from .trainer import AlternatingTrainer
 
 
@@ -88,6 +93,7 @@ def evaluate(trainer, node_features, graph, targets, labels, batch_size,
                     graph["node_index"],
                     training=False,
                     adjacency=adjacency,
+                    edge_relations=trainer.edge_relations,
                 )
                 for target in target_batch
             ]
@@ -156,6 +162,22 @@ def _aggregate_train_metrics(batch_records):
     }
 
 
+def _build_training_edge_relations(graph, full_node_index):
+    """Return local-id relation features sourced exclusively from train edges."""
+    train_indices = graph.get_ppi_indices("train")
+    train_targets = graph.ppi[train_indices]
+    target_local = torch.searchsorted(full_node_index, train_targets)
+    if target_local.numel() and target_local.max() >= full_node_index.numel():
+        raise ValueError("training edge endpoint is absent from the full graph")
+    if not torch.equal(full_node_index[target_local], train_targets):
+        raise ValueError("training edge endpoint is absent from the full graph")
+    return EdgeRelationLookup.from_pairs(
+        target_local,
+        graph.ppi_labels[train_indices],
+        num_nodes=full_node_index.numel(),
+    )
+
+
 def run(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -165,6 +187,10 @@ def run(args):
         torch.set_float32_matmul_precision("high")
 
     device = torch.device(args.device)
+    use_edge_relations = getattr(args, "use_edge_relations", False)
+    use_sampler_edge_relations = getattr(
+        args, "use_sampler_edge_relations", False
+    )
     graph = PPIGraph(
         args.dataset, args.split, root=args.root, device=device, cache_dir=args.cache_dir
     )
@@ -196,6 +222,7 @@ def run(args):
             hidden_dim=args.hidden_dim,
             max_steps=args.max_steps,
             k_hops=args.k_hops,
+            relation_dim=7 if use_sampler_edge_relations else None,
         ).to(device)
     elif args.sampler == "static":
         sampler = StaticNeighborhoodSampler(
@@ -219,6 +246,7 @@ def run(args):
         num_layers=args.gnn_layers,
         heads=args.heads,
         dropout=args.dropout,
+        edge_dim=7 if use_edge_relations else None,
     ).to(device)
     sampler_optimizer = (
         torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
@@ -226,12 +254,17 @@ def run(args):
         else None  # the static sampler has no parameters; its update is a no-op
     )
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
+    edge_relations = (
+        _build_training_edge_relations(graph, full_graph["node_index"])
+        if use_edge_relations or use_sampler_edge_relations else None
+    )
     trainer = AlternatingTrainer(
         sampler,
         predictor,
         sampler_optimizer,
         predictor_optimizer,
         reinforce_gamma=args.reinforce_gamma,
+        edge_relations=edge_relations,
     )
 
     # Build the full-graph adjacency once and share it across every training
@@ -409,6 +442,16 @@ def parse_args():
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--use-edge-relations", action="store_true",
+        help="use 7-D relations on train edges in Predictor GAT; validation, "
+             "test and virtual edges remain all-zero",
+    )
+    parser.add_argument(
+        "--use-sampler-edge-relations", action="store_true",
+        help="use train-edge 7-D relations when the RL sampler scores frontier "
+             "candidates; held-out, target and virtual edges remain all-zero",
+    )
     parser.add_argument("--sampler-lr", type=float, default=1e-4)
     parser.add_argument("--predictor-lr", type=float, default=1e-3)
     parser.add_argument("--reinforce-gamma", type=float, default=1.0)
@@ -426,6 +469,8 @@ def parse_args():
         parser.error("random-subset-min-size must be at least 2")
     if args.random_subset_max_size < args.random_subset_min_size:
         parser.error("random-subset-max-size must be >= random-subset-min-size")
+    if args.use_sampler_edge_relations and args.sampler != "rl":
+        parser.error("sampler edge relations require --sampler rl")
     return args
 
 
