@@ -2,13 +2,14 @@
 
 本项目使用预计算的 ESM-2 蛋白质 embedding 进行 7 类 PPI 多标签预测。模型由全图知识图谱（KG）、REINFORCE 子图 Sampler 和 GAT Predictor 组成。
 
-## 当前结论（截至 docs/README.md §17，2026-09-05）
+## 当前结论（截至 docs/README.md §6，2026-09-05）
 
-- **最优配置**：`--sampler static --k-hops 1 --readout attention`（§15 V1a），
+- **最优配置**：`--sampler static --k-hops 1 --readout attention`（V1a，§6.2），
   跨 split 成立——bfs 0.8105/0.6158、dfs 0.8766/0.6811（对 mean-pool static
-  3/3 正，§17）、random 0.9658/0.8313（BS 主导，仅健全性记录）；
+  3/3 正，§6.3）、random 0.9658/0.8313（BS 主导，仅健全性记录）；20ep 已饱和
+  （40ep 同环境配对仅 1/3 正，§6.3）；
 - **RL 选取假设已关闭**：A2（static k1 底座 ∪ RL 增补，margin 参照 = 底座
-  预测，docs §16）是 sampler 侧最后一条路径——RL 增补与随机增补不可区分
+  预测，docs §6.4）是 sampler 侧最后一条路径——RL 增补与随机增补不可区分
   （E1−E2 = +0.006 MacAUC，2/3），且任何增补都劣于不加（对 V1a 的 MacF1
   0/3 正）；底座播种把 RL 从 0.776 抬到 0.806（+0.031，3/3），证明
   "从零建上下文"确为 RL 失败主因，但增益来自底座而非选取；性能由
@@ -105,13 +106,6 @@ python -m src.train_shs27k --dataset SHS27k --split bfs --device cpu \
 
 测试集额外按训练节点可见性分为 BS、ES、NS；空分组返回 `count=0` 和 `None` 指标。
 
-## 提交约定
-
-- **只运行实验、不修改代码时，不单独提交**：实验记录（`docs/README.md` 更新、
-  结果 JSON 等）保留在工作区未提交状态；
-- 直到下一次**代码修改**发生时，才连同累积的实验记录一并提交（可沿用
-  src / docs 分组提交风格，但实验记录不单独成一次提交）。
-
 ## 验证
 
 ```bash
@@ -119,3 +113,7 @@ python -m unittest discover -s tests -v
 python -m compileall -q src tests
 git diff --check
 ```
+
+配对实验必须固定 OMP/MKL 线程数：线程数（如 2 vs 3）改变 CPU 浮点归约顺序，
+同 seed 轨迹从训练早期分叉，指标漂移达 seed 量级（MacAUC ~0.007、MacF1
+~0.03，docs §6.4）。

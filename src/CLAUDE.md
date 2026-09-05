@@ -113,7 +113,7 @@ self-loop relation 固定为零，Sampler relation 开关不允许用于非 RL s
   PPR 在无标签全图拓扑上 forward-push 预计算（`src/ppr.py`，α/eps 可配），
   按目标惰性缓存；attention 模式的 `forward` 需要 `node_ids`（全局蛋白 id）。
   全图 KG 下 static k1 + attention 为当前项目最优（MacAUC 0.8105 /
-  MacF1 0.6158，docs §15/§16）。
+  MacF1 0.6158，docs §6.2）。
 - 输出 7 维 logits；推理概率直接对 logits 取 sigmoid。
 - 支持多图 batch。
 
