@@ -888,10 +888,96 @@ eps=5e-6，按目标惰性缓存）。86 项单测覆盖 PPR 精度（幂迭代�
   `sampler_optimizer=None` 崩溃；
 - 可见性分组计数不变（BS 0 / ES 1078 / NS 460）。
 
-## 16. 验证
+## 16. A2：static k1 底座 ∪ RL 增补（RISE-DDI 边际采样语义），2026-09-04
+
+### 16.0 设计
+
+- **动机**：RL 已三次被证伪"从零建上下文"（P2a 结构特征、R1 margin 奖励、
+  V2/V3 attention 读出，~0.78 平台）。A2 是 sampler 侧最后一条未测路径：
+  把 RL 改为只学"底座之外的边际选取"。
+- **机制**（`--sampler rl --sampler-base static`）：候选区域先按 G0 种子固定
+  （RISE-DDI 语义，池由目标对决定），再把整个 static 1-hop 底座
+  （= `--sampler static --k-hops 1` 的图，train 对上 mean 43.1 / median 38 /
+  max 154 节点）播种进已选集合，RL 只从 k2 壳层（`--k-hops 2`；
+  |k2∖k1| mean 289.5 / median 266 / max 738，仅 21/4562 train 对壳层为空）
+  选 `max_steps=5` 个增补。底座图随轨迹作为 `reference_graph` 携带；
+  `k_hops=1` 时 frontier 恒空、严格退化为 static k1（有单测钉死）。
+- **奖励参照**（`--reward-ref base`）：margin 奖励的参照前向从 G0 换成底座
+  预测，`Δ_t = M(p_t) − M(p_base)` 即增补的边际价值（RISE-DDI
+  `pred_default` 语义）；无动作轨迹的预测图回退为底座。
+- **对照臂**（`--sampler-policy uniform`）：增补动作在训练与评测时都从同一
+  frontier 均匀抽取、无 sampler 更新——分离"RL 选取"与"随机增补"。
+
+### 16.1 命令
 
 ```bash
-python -m unittest discover -s tests -v
+# E1（A2 主检验）
+python -m src.train_shs27k --dataset SHS27k --split bfs --device cpu \
+  --epochs 20 --hidden-dim 128 --max-steps 5 --reinforce-gamma 0.9 \
+  --sampler rl --sampler-base static --k-hops 2 \
+  --reward-margin --reward-ref base --readout attention --seed S
+# E2（随机增补对照）：E1 + --sampler-policy uniform
+```
+
+每 run 2 线程（OMP/MKL），6 路并行。原始 JSON：
+`/tmp/ppi_a2/e{1,2}_s{42,111,123}.json`。seed 42 的 epoch-1 输出与冒烟运行
+逐位一致（确定性成立）。
+
+### 16.2 结果表（test 指标，best checkpoint by valMacAUC）
+
+| 条件 | 秒 | valMacAUC | MacAUC | MicAUC | MacF1 | MicF1 |
+|---|---:|---:|---:|---:|---:|---:|
+| **E1：A2 rl 底座+增补 + margin(base) + attention** | 4924±60 | **0.8076±0.0048** | **0.8064±0.0043** | 0.8159±0.0051 | **0.5868±0.0150** | 0.6114±0.0207 |
+| E2：A2 + uniform 增补 | 3743±19 | 0.7972±0.0070 | 0.8008±0.0100 | **0.8217±0.0125** | 0.5821±0.0097 | **0.6242±0.0180** |
+
+参照（均含于前文）：V1a static k1+attention（§15，0.8105/0.6158）、
+V1b static k2+attention（§15，0.8065/0.5767）、V2 rl 从零+attention
+（§15，0.7757/0.5343）、heur7（§12，0.7841/0.5726）。
+
+### 16.3 配对 diff（逐 seed）
+
+| 对比 | MacAUC（3 seed） | MacF1（3 seed） | MicAUC | MicF1 |
+|---|---|---|---|---|
+| **E1 − E2（决定性）** | +0.0057（+0.0089/+0.0155/−0.0074，2/3） | +0.0046（2/3） | −0.0058（1/3） | −0.0129（1/3） |
+| E1 − V1a（纯底座） | −0.0041（2/3 正但均值负） | **−0.0291（0/3）** | −0.0163（0/3） | −0.0340（0/3） |
+| E2 − V1a | −0.0098（1/3） | −0.0337（0/3） | −0.0105（1/3） | −0.0211（1/3） |
+| E1 − V1b（全量 k2） | −0.0001 | +0.0101（2/3） | +0.0021 | +0.0180 |
+| **E1 − V2（rl 从零）** | **+0.0307（3/3）** | +0.0525（2/3） | +0.0174（3/3） | +0.0254 |
+
+### 16.4 选取行为
+
+- **margin 学得动**：`mean_final_margin` 三个 seed 一致从 ~0 升至
+  +0.273~+0.276（ep10 即达 +0.23）——底座参照下"挑高边际"的信号存在且被
+  REINFORCE 抓住；但 `mean_reward` 幅度极小（+0.0015~+0.0047，相对底座的
+  边际改进本来就小），且增益不外推为测试指标。
+- 动作空间大：每步从 ~290 个 2-hop 壳层节点中选 1 个、共 5 步；4562 个
+  train 对中 22,758 步/epoch 全部有效（每对都做满 5 次增补）。
+
+### 16.5 判读
+
+- **决定性配对（E1 − E2）无一致差异**（MacAUC +0.006、2/3；Mic 侧为负）——
+  **RL 增补选取与随机增补不可区分**。至此 RL 选取在全部已测语义下
+  （从零建上下文、结构特征、margin 奖励、attention 读出、底座增补）均未
+  显示高于随机/静态的价值，sampler 侧假设可以关闭。
+- **任何增补都劣于不加**：E1、E2 的 MacF1 相对 V1a 为 0/3 正（−0.029 /
+  −0.034）——k2 壳层信息在 attention 读出下仍构成稀释，RL 也未能从
+  ~290 候选中挑出非稀释节点；纯 static k1（0.8105/0.6158）仍是全局最优。
+- **"从零建上下文"确为 RL 失败主因**：底座播种把 RL 从 0.7757 抬到
+  0.8064（E1 − V2 = +0.031，3/3），达到 static 家族水平——但这是底座的
+  贡献，不是选取的贡献。
+- **选择性扩张 ≈ 全量扩张**：E1（+5 选择节点）与 V1b（全量 k2）差
+  −0.0001 MacAUC——扩张粒度不改变结论，最优上下文仍在 k1（~44 节点）。
+- **最终定论**：性能由"上下文量 + 读出"主导（k1 + attention），sampler
+  选取策略不提供可测增益；margin 参照下学得的边际改进（0→0.28）是
+  训练图上的过拟合信号，不迁移到 val/test。
+- 速度：E1 4924s ≫ V1a 599s（且本节为 2 线程×6 路并行，与 §15 的
+  3 线程×3 路条件不同，秒数不可直接比）；从部署角度底座+增补也不划算。
+- 可见性分组计数不变（BS 0 / ES 1078 / NS 460）。
+
+## 17. 验证
+
+```bash
+python -m unittest discover -s tests -v    # 101 项
 python -m compileall -q src tests
 git diff --check
 ```

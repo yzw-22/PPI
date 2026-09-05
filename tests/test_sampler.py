@@ -7,6 +7,9 @@ from src.sampler import (
     EdgeRelationLookup,
     HeuristicSampler,
     RandomSubsetSampler,
+    SampledGraph,
+    SamplingStep,
+    SamplingTrajectory,
     StaticNeighborhoodSampler,
     SubgraphSampler,
     _TargetSafeAdjacency,
@@ -1018,6 +1021,209 @@ class StructuralFeaturesTest(unittest.TestCase):
             self.assertIsNotNone(parameter.grad)
             self.assertTrue(torch.isfinite(parameter.grad).all())
             self.assertGreater(float(parameter.grad.abs().sum()), 0.0)
+
+
+class BaseAugmentedSamplerTest(unittest.TestCase):
+    # Undirected edges: 0-1 (target, removed), 0-2, 1-2, 2-3, 3-4. The 1-hop
+    # region of {0, 1} is {0, 1, 2}; the 2-hop region is {0, 1, 2, 3}.
+    FEATURES = torch.eye(5, dtype=torch.float32)
+    EDGES = torch.tensor([
+        [0, 1, 0, 1, 2, 3],
+        [1, 0, 2, 2, 3, 4],
+    ])
+
+    def test_reference_graph_is_the_static_base_and_additions_come_from_the_shell(self):
+        sampler = SubgraphSampler(
+            esm_dim=5, hidden_dim=4, max_steps=1, k_hops=2, base="static"
+        )
+        static = StaticNeighborhoodSampler(esm_dim=5, k_hops=1)
+
+        trajectory = sampler.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=False
+        )
+        static_graph = static.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=False
+        ).baseline_graph
+
+        self.assertEqual(
+            _graph_signature(trajectory.baseline_graph), ([0, 1], (), [0, 1])
+        )
+        self.assertEqual(
+            _graph_signature(trajectory.reference_graph),
+            _graph_signature(static_graph),
+        )
+        # The only 2-hop shell candidate (node 3) is the forced greedy action.
+        self.assertEqual(len(trajectory.steps), 1)
+        self.assertEqual(
+            trajectory.steps[0].graph.node_index.tolist(), [0, 1, 2, 3]
+        )
+        self.assertEqual(
+            global_edges(trajectory.steps[0].graph),
+            {(0, 2), (1, 2), (2, 3)},
+        )
+        self.assertIs(trajectory.prediction_graph, trajectory.steps[0].graph)
+
+    def test_base_with_k_hops_one_degenerates_to_the_static_sampler(self):
+        sampler = SubgraphSampler(
+            esm_dim=5, hidden_dim=4, max_steps=5, k_hops=1, base="static"
+        )
+        static = StaticNeighborhoodSampler(esm_dim=5, k_hops=1)
+
+        trajectory = sampler.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=True
+        )
+        static_trajectory = static.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=True
+        )
+
+        self.assertEqual(trajectory.steps, [])
+        self.assertEqual(
+            _graph_signature(trajectory.reference_graph),
+            _graph_signature(static_trajectory.baseline_graph),
+        )
+        self.assertIs(trajectory.prediction_graph, trajectory.reference_graph)
+        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+
+    def test_additions_stay_in_the_shell_and_never_touch_base_nodes(self):
+        # Undirected edges: 0-1 (target), 0-2, 1-3, 2-4, 3-5. The base is
+        # {2, 3} and the 2-hop shell is {4, 5}.
+        features = torch.eye(6, dtype=torch.float32)
+        edges = torch.tensor([
+            [0, 1, 0, 2, 1, 3, 2, 4, 3, 5],
+            [1, 0, 2, 0, 3, 1, 4, 2, 5, 3],
+        ])
+        sampler = SubgraphSampler(
+            esm_dim=6, hidden_dim=4, max_steps=2, k_hops=2, base="static"
+        )
+
+        for seed in range(8):
+            torch.manual_seed(seed)
+            trajectory = sampler.sample(
+                features, edges, torch.tensor([0, 1]), training=True
+            )
+
+            self.assertEqual(len(trajectory.steps), 2)
+            # Every step graph starts from targets plus the whole base.
+            for step in trajectory.steps:
+                self.assertEqual(step.graph.node_index.tolist()[:4], [0, 1, 2, 3])
+            added = {
+                int(step.graph.node_index[-1]) for step in trajectory.steps
+            }
+            self.assertTrue(added <= {4, 5})
+
+    def test_base_with_isolated_targets_uses_the_proxy_neighborhood(self):
+        # The only edge 0-1 is the target; both targets prefer node 2 as proxy.
+        features = torch.tensor([
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [-1.0, 0.0],
+        ])
+        edges = torch.tensor([[0, 1], [1, 0]])
+        sampler = SubgraphSampler(
+            esm_dim=2, hidden_dim=4, max_steps=3, k_hops=2, base="static"
+        )
+        static = StaticNeighborhoodSampler(esm_dim=2, k_hops=1)
+
+        trajectory = sampler.sample(
+            features, edges, torch.tensor([0, 1]), training=False
+        )
+        static_trajectory = static.sample(
+            features, edges, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(trajectory.steps, [])
+        self.assertEqual(
+            _graph_signature(trajectory.reference_graph),
+            _graph_signature(static_trajectory.baseline_graph),
+        )
+
+    def test_base_and_policy_are_validated(self):
+        sampler = SubgraphSampler(esm_dim=2, hidden_dim=4)
+        self.assertEqual(sampler.base, "none")
+        self.assertEqual(sampler.policy, "learned")
+        with self.assertRaisesRegex(ValueError, "base"):
+            SubgraphSampler(esm_dim=2, hidden_dim=4, base="bogus")
+        with self.assertRaisesRegex(ValueError, "policy"):
+            SubgraphSampler(esm_dim=2, hidden_dim=4, policy="bogus")
+
+    def test_prediction_graph_property_fallback_chain(self):
+        def _graph_of(size):
+            return SampledGraph(
+                node_index=torch.arange(size),
+                feature_index=torch.arange(size),
+                edge_index=torch.empty((2, 0), dtype=torch.long),
+                target_nodes=torch.tensor([0, 1]),
+            )
+
+        baseline = _graph_of(2)
+        reference = _graph_of(3)
+        stepped = _graph_of(4)
+
+        self.assertIs(
+            SamplingTrajectory(
+                baseline, [SamplingStep(stepped, torch.tensor(0.0))]
+            ).prediction_graph,
+            stepped,
+        )
+        self.assertIs(
+            SamplingTrajectory(baseline, [], reference).prediction_graph,
+            reference,
+        )
+        self.assertIs(
+            SamplingTrajectory(baseline, []).prediction_graph, baseline
+        )
+
+
+class UniformPolicySamplerTest(unittest.TestCase):
+    # Undirected edges: 0-1 (target), 0-2, 0-3, 1-4. The 1-hop frontier of
+    # {0, 1} is {2, 3, 4}.
+    FEATURES = torch.eye(5, dtype=torch.float32)
+    EDGES = torch.tensor([
+        [0, 1, 0, 2, 0, 3, 1, 4],
+        [1, 0, 2, 0, 3, 0, 4, 1],
+    ])
+
+    def _sampler(self):
+        return SubgraphSampler(
+            esm_dim=5, hidden_dim=4, max_steps=1, k_hops=1, policy="uniform"
+        )
+
+    def test_uniform_policy_draws_randomly_at_train_and_eval(self):
+        sampler = self._sampler()
+        chosen = set()
+        for seed in range(60):
+            torch.manual_seed(seed)
+            for training in (False, True):
+                trajectory = sampler.sample(
+                    self.FEATURES, self.EDGES, torch.tensor([0, 1]),
+                    training=training,
+                )
+                self.assertEqual(len(trajectory.steps), 1)
+                step = trajectory.steps[0]
+                chosen.add(int(step.graph.node_index[-1]))
+                # Uniform draws stay graph-free: no policy gradient flows.
+                self.assertFalse(step.log_prob.requires_grad)
+                self.assertAlmostEqual(
+                    float(step.log_prob), -math.log(3.0), places=6
+                )
+        # The draws cover the whole frontier, so eval is not an argmax.
+        self.assertEqual(chosen, {2, 3, 4})
+
+    def test_uniform_policy_is_deterministic_under_the_same_seed(self):
+        sampler = self._sampler()
+        torch.manual_seed(11)
+        first = sampler.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=False
+        )
+        torch.manual_seed(11)
+        second = sampler.sample(
+            self.FEATURES, self.EDGES, torch.tensor([0, 1]), training=False
+        )
+
+        self.assertEqual(
+            _trajectory_signature(first), _trajectory_signature(second)
+        )
 
 
 if __name__ == "__main__":

@@ -2,16 +2,21 @@
 
 本项目使用预计算的 ESM-2 蛋白质 embedding 进行 7 类 PPI 多标签预测。模型由全图知识图谱（KG）、REINFORCE 子图 Sampler 和 GAT Predictor 组成。
 
-## 当前结论（截至 docs/README.md §15，2026-09-04）
+## 当前结论（截至 docs/README.md §16，2026-09-04）
 
 - **最优配置**：`--sampler static --k-hops 1 --readout attention`（MacAUC
   0.8105 / MacF1 0.6158 / MicF1 0.6454，599s）——A1 读出重构（target 锚定
   LinkAttention + PPR 位置编码）是唯一抬高天花板的改动；
-- **RL 小预算平台**：6.5–7 节点预算下 RL/heur 恒在 ~0.78，sampler 侧修复
-  （结构特征 P2a、margin 奖励 R1、attention 读出 V2/V3）均无法突破；
-- RL 实验默认带 `--reward-margin`（更稳、`mean_final_margin` 诊断免费）；
-  heur 是 sampler 改动的行为基准（同预算配对判定，打不过 heur 即无效）；
-- 未测路径：A2（static 底座 ∪ RL 增补，RISE-DDI 采样语义）。
+- **RL 选取假设已关闭**：A2（static k1 底座 ∪ RL 增补，margin 参照 = 底座
+  预测，docs §16）是 sampler 侧最后一条路径——RL 增补与随机增补不可区分
+  （E1−E2 = +0.006 MacAUC，2/3），且任何增补都劣于不加（对 V1a 的 MacF1
+  0/3 正）；底座播种把 RL 从 0.776 抬到 0.806（+0.031，3/3），证明
+  "从零建上下文"确为 RL 失败主因，但增益来自底座而非选取；性能由
+  **上下文量 + 读出**主导；
+- **RL 实验默认**：`--reward-margin`（margin 学得动：`mean_final_margin`
+  0→0.28 一致上升，诊断免费）；heur 为 sampler 改动的行为基准；
+- 全部已测 sampler 语义：RL 从零 / static / random-subset / heuristic /
+  结构特征 P2a / margin 奖励 R1 / attention 读出 V2-V3 / 底座增补 A2。
 
 ## 代码结构
 
@@ -19,9 +24,10 @@
 - `src/ppr.py`：无标签全图拓扑上的稀疏 PPR（forward-push，按目标惰性缓存）；
 - `src/sampler.py`：RL Sampler 及 static / random-subset / heuristic 消融；
 - `src/predictor.py`：GAT 编码 + 读出（mean / attention+PPR），7 维 logits；
-- `src/trainer.py`：交替更新 Sampler 与 Predictor（BCE 差分或 margin 奖励）；
+- `src/trainer.py`：交替更新 Sampler 与 Predictor（BCE 差分或 margin 奖励，
+  参照图可选 G0 或 A2 静态底座）；
 - `src/train_shs27k.py`：训练、验证和测试入口，支持 SHS27k、SHS148k 和 STRING；
-- `tests/`：86 项单测（图构建、PPR、采样、奖励、读出与入参守卫）；
+- `tests/`：101 项单测（图构建、PPR、采样、奖励、读出与入参守卫）；
 - 机制细节与不变量见 [src/CLAUDE.md](src/CLAUDE.md)，实验记录（唯一事实源）
   见 [docs/README.md](docs/README.md)。
 
@@ -54,16 +60,26 @@
 - `StaticNeighborhoodSampler` / `RandomSubsetSampler` / `HeuristicSampler`
   （均不可学习、零参数、轨迹无动作）：分别取全部安全 k-hop 区域、同预算
   随机子集、同预算确定性拓扑排序（共邻→单侧→其余）；heur 为 RL 的行为基准。
+- **A2 增补语义**（`--sampler rl --sampler-base static`）：候选区域先按 G0
+  种子固定（RISE-DDI 语义），再把整个 static 1-hop 底座（即 `--sampler static
+  --k-hops 1` 的图，SHS27k 上平均 ~45 节点）播种进已选集合，RL 只从区域剩余
+  部分（k2 壳层，需 `--k-hops 2`）选增补；`k_hops=1` 时 frontier 恒空、严格
+  退化为 static k1。底座作为 `reference_graph` 随轨迹携带。`--sampler-policy
+  uniform`（对照臂）在训练与评测时都从同一 frontier 均匀抽增补、无 sampler
+  更新。
 
 ## RL 与训练
 
 - Sampler 更新：Predictor 冻结（eval + no_grad），现行奖励为增量 BCE 差分
   `r_t = L(G_{t−1}) − L(G_t)`（首步以 `G_0` 为前项，无 Δn 惩罚）；
-  `--reward-margin`（默认关闭）改为固定 G0 参考的标签对齐平均概率边际改进
-  `M(p)=mean_j((2y_j−1)·p_j) ∈ [−1,1]`，非对称缩放默认 2:1。
+  `--reward-margin`（默认关闭）改为固定参考图的标签对齐平均概率边际改进
+  `M(p)=mean_j((2y_j−1)·p_j) ∈ [−1,1]`，非对称缩放默认 2:1。参照图由
+  `--reward-ref` 选择：`initial`（默认，G0，历史行为）或 `base`（A2 静态
+  底座的预测，即增补的边际价值；须 `--sampler rl --sampler-base static`）。
   return-to-go `G_t = r_t + γG_{t+1}`，advantage 为 batch 内标准化的
   detached RTG，`L_pol = −log π·stopgrad(Â)`。
-- Predictor 更新：Sampler 冻结，只用每条贪心轨迹的 `final_graph` 做 BCE。
+- Predictor 更新：Sampler 冻结，只用每条贪心轨迹的 `prediction_graph`
+  （末步图 → 无步时底座 reference → G0）做 BCE。
 - F1 使用固定阈值 `0.5`；`mean_final_margin` 两种奖励模式均进入 epoch 记录。
 - 训练期间只评估验证集；按验证 Macro-AUC 保存最佳状态（`--checkpoint-dir`
   落盘或内存保留），训练结束后仅在最佳状态上测试一次。
@@ -79,6 +95,12 @@ python -m src.train_shs27k --dataset SHS27k --split bfs --device cuda \
 python -m src.train_shs27k --dataset SHS27k --split bfs --device cuda \
   --epochs 20 --hidden-dim 128 --sampler rl --max-steps 5 \
   --reinforce-gamma 0.9 --reward-margin
+
+# A2：static k1 底座 ∪ RL 增补（margin 参照 = 底座预测）
+python -m src.train_shs27k --dataset SHS27k --split bfs --device cpu \
+  --epochs 20 --hidden-dim 128 --max-steps 5 --reinforce-gamma 0.9 \
+  --sampler rl --sampler-base static --k-hops 2 \
+  --reward-margin --reward-ref base --readout attention
 ```
 
 测试集额外按训练节点可见性分为 BS、ES、NS；空分组返回 `count=0` 和 `None` 指标。

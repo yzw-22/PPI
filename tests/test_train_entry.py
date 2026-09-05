@@ -158,6 +158,38 @@ class TrainEntrySamplerArgumentsTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parse_args()
 
+    def test_sampler_base_policy_and_reward_ref_flags(self):
+        with patch.object(sys, "argv", ["train_shs27k"]):
+            args = parse_args()
+            self.assertEqual(args.sampler_base, "none")
+            self.assertEqual(args.sampler_policy, "learned")
+            self.assertEqual(args.reward_ref, "initial")
+        with patch.object(
+            sys, "argv",
+            ["train_shs27k", "--sampler-base", "static",
+             "--sampler-policy", "uniform", "--reward-ref", "base"],
+        ):
+            args = parse_args()
+            self.assertEqual(args.sampler_base, "static")
+            self.assertEqual(args.sampler_policy, "uniform")
+            self.assertEqual(args.reward_ref, "base")
+
+    def test_sampler_base_policy_and_reward_ref_guards(self):
+        for argv in (
+            ["train_shs27k", "--sampler", "static", "--sampler-base", "static"],
+            ["train_shs27k", "--sampler", "heuristic",
+             "--sampler-policy", "uniform"],
+            ["train_shs27k", "--sampler-base", "bogus"],
+            ["train_shs27k", "--sampler-policy", "bogus"],
+            ["train_shs27k", "--reward-ref", "base"],
+            ["train_shs27k", "--sampler", "rl", "--reward-ref", "base"],
+            ["train_shs27k", "--sampler", "static",
+             "--sampler-base", "static", "--reward-ref", "base"],
+        ):
+            with patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit):
+                    parse_args()
+
     def test_missing_split_file_is_rejected_at_parse_time(self):
         # bfs is a valid SHS148k split (served by --root dataset_ppisplit), so
         # availability passes but a missing split file must fail cleanly here

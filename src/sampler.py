@@ -119,10 +119,30 @@ class SamplingTrajectory:
 
     baseline_graph: SampledGraph
     steps: list[SamplingStep]
+    # Optional second reference graph (the static base of an augmented RL
+    # trajectory): the marginal reward reference and the prediction graph of
+    # a step-free augmented trajectory. ``None`` keeps the historical
+    # G0-only behavior.
+    reference_graph: SampledGraph | None = None
 
     @property
     def final_graph(self):
         return self.steps[-1].graph if self.steps else self.baseline_graph
+
+    @property
+    def prediction_graph(self):
+        """The graph predictor inputs should use for this trajectory.
+
+        Trajectories with actions end at their last action graph. A
+        step-free augmented trajectory carries its whole context in the
+        static base, so that base is the prediction graph; a plain step-free
+        trajectory falls back to the baseline graph.
+        """
+        if self.steps:
+            return self.steps[-1].graph
+        if self.reference_graph is not None:
+            return self.reference_graph
+        return self.baseline_graph
 
 
 class SubgraphSampler(nn.Module):
@@ -147,6 +167,21 @@ class SubgraphSampler(nn.Module):
     initialized to the ``HeuristicSampler`` ranking (see
     ``STRUCTURAL_PRIOR``): greedy evaluation starts at the heuristic policy
     and REINFORCE refines both paths from there.
+
+    With ``base="static"`` every trajectory is augmented (RISE-DDI-style
+    marginal semantics): the candidate region is fixed once on the G0 seeds
+    (targets and any virtual proxies), the selection is then seeded with the
+    whole static 1-hop base — the graph ``StaticNeighborhoodSampler`` with
+    ``k_hops=1`` returns — and the policy only chooses additions from the
+    remainder of that region. The trajectory carries the base as
+    ``reference_graph`` (the natural reference for marginal rewards and for
+    step-free prediction). ``k_hops=1`` leaves an empty frontier: the
+    augmented sampler degenerates to the static sampler.
+
+    With ``policy="uniform"`` additions are drawn uniformly from the same
+    frontier at train *and* eval time instead of from the learned score
+    distribution — the matched-budget control arm (the training entry builds
+    no sampler optimizer for this policy, so no sampler update happens).
     """
 
     #: Width of the structural candidate-feature block; the column layout is
@@ -161,7 +196,8 @@ class SubgraphSampler(nn.Module):
     STRUCTURAL_PRIOR = (8.0, 4.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10,
-                 k_hops=1, relation_dim=None, structural_features=False):
+                 k_hops=1, relation_dim=None, structural_features=False,
+                 base="none", policy="learned"):
         super().__init__()
         if max_steps < 0:
             raise ValueError("max_steps must be non-negative")
@@ -169,12 +205,18 @@ class SubgraphSampler(nn.Module):
             raise ValueError("k_hops must be non-negative")
         if relation_dim is not None and relation_dim <= 0:
             raise ValueError("relation_dim must be positive when provided")
+        if base not in ("none", "static"):
+            raise ValueError("base must be 'none' or 'static'")
+        if policy not in ("learned", "uniform"):
+            raise ValueError("policy must be 'learned' or 'uniform'")
 
         self.esm_dim = esm_dim
         self.max_steps = max_steps
         self.k_hops = k_hops
         self.relation_dim = relation_dim
         self.structural_features = structural_features
+        self.base = base
+        self.policy = policy
         # Shared-adjacency degree-scale cache for the structural features;
         # populated on first use (see ``_degree_scale``).
         self._degree_cache = None
@@ -241,7 +283,9 @@ class SubgraphSampler(nn.Module):
 
         Returns:
             ``SamplingTrajectory``.  Each step contains the graph *after* its
-            action, while ``log_prob`` describes the decision.
+            action, while ``log_prob`` describes the decision.  With
+            ``base="static"`` the trajectory additionally carries the static
+            base as ``reference_graph``.
         """
         if training is None:
             training = self.training
@@ -273,7 +317,24 @@ class SubgraphSampler(nn.Module):
         baseline_graph = self._make_graph(
             selected, graph_edges, target_local, node_index, edge_relations
         )
+        # ``allowed_nodes`` is computed once per trajectory from the G0 seeds
+        # (RISE-DDI semantics: the pool is determined by the target pair),
+        # *before* any base seeding — with ``base="static"`` and ``k_hops=1``
+        # the base already covers the whole region, so the frontier stays
+        # empty and the trajectory degenerates to the static sampler.
         allowed_nodes = self._k_hop_region(selected, adjacency, self.k_hops)
+
+        # Augmented semantics: seed the selection with the full static 1-hop
+        # base and record it as the trajectory's reference graph — the
+        # marginal reward reference and the step-free prediction graph.
+        reference_graph = None
+        if self.base == "static":
+            base_region = self._k_hop_region(selected, adjacency, 1)
+            selected.extend(sorted(base_region - set(selected)))
+            self._add_real_edges(selected, graph_edges, adjacency)
+            reference_graph = self._make_graph(
+                selected, graph_edges, target_local, node_index, edge_relations
+            )
 
         # Structural features: distances to each target are fixed for the
         # whole trajectory (the safe adjacency never changes), so the two
@@ -296,8 +357,9 @@ class SubgraphSampler(nn.Module):
                 v, allowed_nodes, adjacency, distance_cap
             )
 
-        # ``allowed_nodes`` is computed once per trajectory. The frontier is
-        # then maintained incrementally without repeating the k-hop traversal.
+        # The frontier is initialized from every selected node (targets,
+        # proxies and the static base, if any) and then maintained
+        # incrementally without repeating the k-hop traversal.
         selected_set = set(selected)
         frontier = {
             neighbor
@@ -364,7 +426,20 @@ class SubgraphSampler(nn.Module):
                     device=scores.device, dtype=scores.dtype
                 )
             probs = torch.softmax(scores, dim=0)
-            if training:
+            if self.policy == "uniform":
+                # Control arm: draw the addition uniformly from the same
+                # frontier at train *and* eval time (no argmax switch), so
+                # the predictor sees matched-budget random context. The
+                # log-probability stays graph-free — the training entry
+                # builds no optimizer for this policy.
+                choice = torch.randint(
+                    candidate_tensor.shape[0], (),
+                    device=candidate_tensor.device,
+                )
+                log_prob = probs.new_full(
+                    (), -math.log(float(candidate_tensor.shape[0]))
+                )
+            elif training:
                 choice = torch.distributions.Categorical(probs).sample()
                 log_prob = torch.log(probs[choice])
             else:
@@ -393,7 +468,7 @@ class SubgraphSampler(nn.Module):
             SamplingStep(graph, log_prob)
             for (log_prob, _, _), graph in zip(step_records, step_graphs)
         ]
-        return SamplingTrajectory(baseline_graph, steps)
+        return SamplingTrajectory(baseline_graph, steps, reference_graph)
 
     def _candidate_relation_features(self, candidates, selected, adjacency,
                                      edge_relations):

@@ -14,17 +14,20 @@ class AlternatingTrainer:
 
     def __init__(self, sampler, predictor, sampler_optimizer, predictor_optimizer,
                  reinforce_gamma=1.0, edge_relations=None, reward="bce_diff",
-                 reward_pos=2.0, reward_neg=1.0):
+                 reward_pos=2.0, reward_neg=1.0, reward_ref="initial"):
         if not 0.0 <= reinforce_gamma <= 1.0:
             raise ValueError("reinforce_gamma must be in [0, 1]")
         if reward not in ("bce_diff", "margin"):
             raise ValueError("reward must be 'bce_diff' or 'margin'")
         if reward_pos <= 0.0 or reward_neg <= 0.0:
             raise ValueError("reward_pos and reward_neg must be positive")
+        if reward_ref not in ("initial", "base"):
+            raise ValueError("reward_ref must be 'initial' or 'base'")
         # ``sampler_optimizer`` may be None when the sampler has no parameters
-        # (e.g. the non-learnable ``StaticNeighborhoodSampler``): its update
-        # phase is a no-op because such trajectories carry no steps, so the
-        # optimizer is never stepped.
+        # (e.g. the non-learnable ``StaticNeighborhoodSampler``) or follows a
+        # non-learnable uniform policy: its update phase is a no-op either
+        # because such trajectories carry no steps or because the policy is
+        # not scored by a network.
         self.sampler = sampler
         self.predictor = predictor
         self.sampler_optimizer = sampler_optimizer
@@ -34,6 +37,7 @@ class AlternatingTrainer:
         self.reward = reward
         self.reward_pos = reward_pos
         self.reward_neg = reward_neg
+        self.reward_ref = reward_ref
 
     def sampler_batch_step(self, node_features, edge_index, target_nodes, labels,
                            node_index=None, adjacency=None):
@@ -61,9 +65,21 @@ class AlternatingTrainer:
             for target in target_nodes
         ]
         labels = labels.to(device=node_features.device, dtype=torch.float32)
+        # The reward reference forward. With ``reward_ref="base"`` a
+        # trajectory carrying an augmented static base is scored against its
+        # base-only prediction — the marginal value of the RL additions —
+        # while ``reward_ref="initial"`` keeps the historical G0 reference
+        # bit-for-bit (the metric keys keep the historical ``baseline_`` name).
+        reference_graphs = [
+            trajectory.reference_graph
+            if self.reward_ref == "base"
+            and trajectory.reference_graph is not None
+            else trajectory.baseline_graph
+            for trajectory in trajectories
+        ]
         with torch.no_grad():
             baseline_logits = self._predict_graphs(
-                node_features, [trajectory.baseline_graph for trajectory in trajectories]
+                node_features, reference_graphs
             )
             baseline_losses = F.binary_cross_entropy_with_logits(
                 baseline_logits, labels, reduction="none"
@@ -75,7 +91,12 @@ class AlternatingTrainer:
             for sample_index, trajectory in enumerate(trajectories)
             for step in trajectory.steps
         ]
-        if not step_records:
+        if not step_records or self.sampler_optimizer is None:
+            # Non-learnable policies (step-free static-style trajectories, or
+            # a uniform control policy with steps) contribute no sampler
+            # update: report the reference metrics with zero losses. The
+            # zero-step final-margin fallback reads the reference margins,
+            # i.e. the base margin for an augmented trajectory.
             self._restore_requires_grad(self.sampler, sampler_requires_grad)
             self._restore_requires_grad(self.predictor, predictor_requires_grad)
             zero = baseline_losses.new_zeros(())
@@ -85,7 +106,7 @@ class AlternatingTrainer:
                 "baseline_loss": baseline_losses.mean().detach(),
                 "mean_reward": zero,
                 "mean_final_margin": baseline_margins.mean().detach(),
-                "sampler_step_count": 0,
+                "sampler_step_count": len(step_records),
             }
 
         with torch.no_grad():
@@ -181,9 +202,11 @@ class AlternatingTrainer:
                 for target in target_nodes
             ]
         labels = labels.to(device=node_features.device, dtype=torch.float32)
-        # Match evaluation: train on the final graph only. For a trajectory
-        # with no actions, final_graph is the G0 baseline graph.
-        graphs = [trajectory.final_graph for trajectory in trajectories]
+        # Match evaluation: train on the prediction graph only. A trajectory
+        # with actions ends at its last action graph; a step-free augmented
+        # trajectory predicts on its static base (``reference_graph``), and a
+        # plain step-free one on the G0 baseline graph.
+        graphs = [trajectory.prediction_graph for trajectory in trajectories]
 
         logits = self._predict_graphs(node_features, graphs)
         loss = F.binary_cross_entropy_with_logits(
@@ -280,11 +303,12 @@ class AlternatingTrainer:
     @staticmethod
     def _trajectory_rewards_margin(baseline_margin, step_margins,
                                    w_pos=2.0, w_neg=1.0):
-        """Margin-improvement rewards against the fixed G0 reference.
+        """Margin-improvement rewards against the fixed reference graph.
 
-        Every step is scored by ``M(step) - M(G0)`` — the same reference for
-        all steps, unlike the sequential BCE difference — and scaled by
-        ``w_pos`` for improvements and ``w_neg`` for regressions
+        Every step is scored by ``M(step) - M(ref)`` — the same reference for
+        all steps (G0, or the augmented static base under
+        ``reward_ref="base"``), unlike the sequential BCE difference — and
+        scaled by ``w_pos`` for improvements and ``w_neg`` for regressions
         (RISE-DDI-style asymmetric weighting).  The margin is linear and
         bounded in [−1, 1], avoiding the heavy tails of BCE differences.
         """

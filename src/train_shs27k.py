@@ -102,7 +102,7 @@ def evaluate(trainer, node_features, graph, targets, labels, batch_size,
                 )
                 for target in target_batch
             ]
-            graphs = [trajectory.final_graph for trajectory in trajectories]
+            graphs = [trajectory.prediction_graph for trajectory in trajectories]
             logits = trainer._predict_graphs(node_features, graphs)
             probabilities.append(torch.sigmoid(logits).cpu())
 
@@ -235,6 +235,8 @@ def run(args):
             k_hops=args.k_hops,
             relation_dim=7 if use_sampler_edge_relations else None,
             structural_features=args.sampler_structural_features,
+            base=args.sampler_base,
+            policy=args.sampler_policy,
         ).to(device)
     elif args.sampler == "static":
         sampler = StaticNeighborhoodSampler(
@@ -281,8 +283,9 @@ def run(args):
     ).to(device)
     sampler_optimizer = (
         torch.optim.Adam(sampler.parameters(), lr=args.sampler_lr)
-        if args.sampler == "rl"
-        else None  # the static sampler has no parameters; its update is a no-op
+        if args.sampler == "rl" and args.sampler_policy == "learned"
+        else None  # non-learnable samplers and the uniform control policy
+                   # never receive a sampler update
     )
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
     edge_relations = (
@@ -299,6 +302,7 @@ def run(args):
         reward="margin" if args.reward_margin else "bce_diff",
         reward_pos=args.reward_pos,
         reward_neg=args.reward_neg,
+        reward_ref=args.reward_ref,
     )
 
     # Build the full-graph adjacency once and share it across every training
@@ -483,6 +487,23 @@ def parse_args():
         "--k-hops", type=int, default=1,
         help="maximum safe-adjacency distance from G0 seeds for sampler actions",
     )
+    parser.add_argument(
+        "--sampler-base", choices=["none", "static"], default="none",
+        help="augmented RL semantics: fix the candidate region on the G0 "
+             "seeds, then seed every trajectory with the full static 1-hop "
+             "base (the graph --sampler static with k-hops 1 returns) before "
+             "any learned action, so RL only chooses additions from the rest "
+             "of the region; k-hops 1 leaves an empty frontier and "
+             "degenerates to the static sampler; requires --sampler rl",
+    )
+    parser.add_argument(
+        "--sampler-policy", choices=["learned", "uniform"], default="learned",
+        help="action policy of the RL sampler: learned (default, scored by "
+             "the network and trained with REINFORCE) or uniform (control "
+             "arm: additions are drawn uniformly from the same frontier at "
+             "train and eval time, without sampler training); requires "
+             "--sampler rl",
+    )
     parser.add_argument("--gnn-layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -541,6 +562,14 @@ def parse_args():
         "--reward-neg", type=float, default=1.0,
         help="reward scale for margin regressions (--reward-margin)",
     )
+    parser.add_argument(
+        "--reward-ref", choices=["initial", "base"], default="initial",
+        help="reference graph of the reward: initial (default, G0 = target "
+             "pair plus virtual proxies, historical behavior) or base "
+             "(marginal reward against the augmented static base prediction, "
+             "RISE-DDI-style pred_default; requires --sampler rl "
+             "--sampler-base static)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.split not in PPIGraph.AVAILABLE_SPLITS[args.dataset]:
@@ -566,6 +595,16 @@ def parse_args():
         parser.error("sampler edge relations require --sampler rl")
     if args.sampler_structural_features and args.sampler != "rl":
         parser.error("sampler structural features require --sampler rl")
+    if args.sampler_base != "none" and args.sampler != "rl":
+        parser.error("sampler-base requires --sampler rl")
+    if args.sampler_policy != "learned" and args.sampler != "rl":
+        parser.error("sampler-policy requires --sampler rl")
+    if args.reward_ref == "base" and (
+        args.sampler != "rl" or args.sampler_base != "static"
+    ):
+        parser.error(
+            "reward-ref base requires --sampler rl --sampler-base static"
+        )
     if args.reward_pos <= 0.0 or args.reward_neg <= 0.0:
         parser.error("reward-pos and reward-neg must be positive")
     if not 0.0 < args.ppr_alpha < 1.0:
