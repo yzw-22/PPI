@@ -89,7 +89,7 @@ class SubgraphSamplerTest(unittest.TestCase):
 
         self.assertEqual(trajectory.baseline_graph.edge_attr.shape, (0, 7))
         self.assertTrue(torch.equal(
-            trajectory.final_graph.edge_attr,
+            trajectory.prediction_graph.edge_attr,
             torch.stack((
                 context_relation,
                 context_relation,
@@ -185,8 +185,8 @@ class SubgraphSamplerTest(unittest.TestCase):
             edge_relations=relation_on_three,
         )
 
-        self.assertEqual(first.final_graph.node_index.tolist()[-1], 2)
-        self.assertEqual(second.final_graph.node_index.tolist()[-1], 3)
+        self.assertEqual(first.prediction_graph.node_index.tolist()[-1], 2)
+        self.assertEqual(second.prediction_graph.node_index.tolist()[-1], 3)
 
     def test_relation_projection_receives_policy_gradient(self):
         torch.manual_seed(7)
@@ -328,9 +328,9 @@ class SubgraphSamplerTest(unittest.TestCase):
             node_features, edge_index, torch.tensor([0, 1]), training=False
         )
         self.assertEqual(len(expanded.steps), 1)
-        self.assertEqual(len(expanded.final_graph.node_index), 3)
+        self.assertEqual(len(expanded.prediction_graph.node_index), 3)
         self.assertTrue(
-            set(expanded.final_graph.node_index.tolist()).intersection({2, 3})
+            set(expanded.prediction_graph.node_index.tolist()).intersection({2, 3})
         )
 
     def test_k_hop_region_and_trajectory_limit(self):
@@ -361,9 +361,9 @@ class SubgraphSamplerTest(unittest.TestCase):
                 node_features, edge_index, torch.tensor([0, 1]), training=False
             )
             self.assertEqual(
-                set(trajectory.final_graph.node_index.tolist()), expected_nodes
+                set(trajectory.prediction_graph.node_index.tolist()), expected_nodes
             )
-            self.assertNotIn((0, 1), global_edges(trajectory.final_graph))
+            self.assertNotIn((0, 1), global_edges(trajectory.prediction_graph))
 
     def test_k_hop_region_is_built_once_and_shared_adjacency_is_lazily_overlaid(self):
         class CountingSampler(SubgraphSampler):
@@ -465,7 +465,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
             torch.tensor([0, 1]),
             training=False,
             edge_relations=relations,
-        ).final_graph
+        ).prediction_graph
 
         attributed_edges = {}
         for edge, relation in zip(graph.edge_index.t(), graph.edge_attr):
@@ -497,7 +497,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
             torch.tensor([0, 1]),
             training=False,
             edge_relations=relations,
-        ).final_graph
+        ).prediction_graph
 
         self.assertTrue(torch.equal(graph.edge_attr, torch.zeros_like(graph.edge_attr)))
 
@@ -509,7 +509,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "k_hops"):
             StaticNeighborhoodSampler(esm_dim=2, k_hops=-1)
 
-    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+    def test_trajectory_has_no_steps_and_prediction_is_the_baseline_graph(self):
         node_features = torch.eye(5, dtype=torch.float32)
         edge_index = torch.tensor([
             [0, 1, 0, 1, 2, 3],
@@ -522,7 +522,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
         )
 
         self.assertEqual(trajectory.steps, [])
-        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+        self.assertIs(trajectory.prediction_graph, trajectory.baseline_graph)
 
     def test_graph_is_the_full_k_hop_region_with_induced_safe_edges(self):
         # Undirected edges: 0-1 (target, removed), 0-2, 1-2, 2-3, 3-4.
@@ -539,7 +539,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
             sampler = StaticNeighborhoodSampler(esm_dim=5, k_hops=k_hops)
             graph = sampler.sample(
                 node_features, edge_index, torch.tensor([0, 1]), training=False
-            ).final_graph
+            ).prediction_graph
 
             self.assertEqual(set(graph.node_index.tolist()), expected_nodes)
             self.assertEqual(global_edges(graph), expected_edges)
@@ -558,7 +558,7 @@ class StaticNeighborhoodSamplerTest(unittest.TestCase):
 
         graph = sampler.sample(
             node_features, edge_index, torch.tensor([0, 1]), training=False
-        ).final_graph
+        ).prediction_graph
 
         self.assertEqual(graph.node_index.tolist(), [0, 1, 2])
         self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
@@ -624,7 +624,7 @@ class RandomSubsetSamplerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_size"):
             RandomSubsetSampler(esm_dim=2, min_size=5, max_size=3)
 
-    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+    def test_trajectory_has_no_steps_and_prediction_is_the_baseline_graph(self):
         node_features = torch.eye(8, dtype=torch.float32)
         edge_index = torch.tensor([
             [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
@@ -637,7 +637,7 @@ class RandomSubsetSamplerTest(unittest.TestCase):
         )
 
         self.assertEqual(trajectory.steps, [])
-        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+        self.assertIs(trajectory.prediction_graph, trajectory.baseline_graph)
 
     def test_graph_always_contains_targets_within_the_region_and_size_range(self):
         # Region of {0, 1} is {0..7}: candidates 2..7 give sizes 3..5 room.
@@ -653,7 +653,7 @@ class RandomSubsetSamplerTest(unittest.TestCase):
             torch.manual_seed(seed)
             graph = sampler.sample(
                 node_features, edge_index, torch.tensor([0, 1]), training=False
-            ).final_graph
+            ).prediction_graph
             nodes = set(graph.node_index.tolist())
             self.assertLessEqual(nodes, {0, 1, 2, 3, 4, 5, 6, 7})
             self.assertIn(0, nodes)
@@ -676,7 +676,7 @@ class RandomSubsetSamplerTest(unittest.TestCase):
         torch.manual_seed(7)
         graph = sampler.sample(
             node_features, edge_index, torch.tensor([0, 1]), training=False
-        ).final_graph
+        ).prediction_graph
         nodes = set(graph.node_index.tolist())
         expected = {tuple(sorted(edge)) for edge in safe_edges
                     if set(edge) <= nodes}
@@ -696,7 +696,7 @@ class RandomSubsetSamplerTest(unittest.TestCase):
             torch.manual_seed(seed)
             graph = sampler.sample(
                 node_features, edge_index, torch.tensor([0, 1]), training=False
-            ).final_graph
+            ).prediction_graph
 
             self.assertEqual(set(graph.node_index.tolist()), {0, 1, 2})
             self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
@@ -775,7 +775,7 @@ class RandomSubsetSamplerTwoIsolatedTargetsTest(unittest.TestCase):
             torch.manual_seed(seed)
             graph = sampler.sample(
                 node_features, edge_index, torch.tensor([0, 1]), training=False
-            ).final_graph
+            ).prediction_graph
             nodes = set(graph.node_index.tolist())
             self.assertIn(0, nodes)
             self.assertIn(1, nodes)
@@ -800,7 +800,7 @@ class HeuristicSamplerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_size"):
             HeuristicSampler(esm_dim=2, min_size=5, max_size=3)
 
-    def test_trajectory_has_no_steps_and_final_is_the_baseline_graph(self):
+    def test_trajectory_has_no_steps_and_prediction_is_the_baseline_graph(self):
         node_features = torch.eye(8, dtype=torch.float32)
         edge_index = torch.tensor([
             [0, 1, 0, 2, 0, 3, 0, 4, 1, 5, 1, 6, 1, 7],
@@ -813,7 +813,7 @@ class HeuristicSamplerTest(unittest.TestCase):
         )
 
         self.assertEqual(trajectory.steps, [])
-        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+        self.assertIs(trajectory.prediction_graph, trajectory.baseline_graph)
 
     def test_ranking_prefers_common_then_touching_then_rest_by_degree(self):
         # Undirected edges: 0-1, 0-2, 1-2, 0-3, 1-4, 4-5, 4-6, 5-7, 6-7.
@@ -846,7 +846,7 @@ class HeuristicSamplerTest(unittest.TestCase):
         torch.manual_seed(0)
         graph = sampler.sample(
             node_features, edge_index, torch.tensor([0, 1]), training=False
-        ).final_graph
+        ).prediction_graph
 
         self.assertEqual(set(graph.node_index.tolist()), {0, 1, 2})
         self.assertEqual(global_edges(graph), {(0, 2), (1, 2)})
@@ -870,7 +870,7 @@ class HeuristicSamplerTest(unittest.TestCase):
             torch.manual_seed(seed)
             graph = sampler.sample(
                 node_features, edge_index, torch.tensor([0, 1]), training=False
-            ).final_graph
+            ).prediction_graph
             nodes = set(graph.node_index.tolist())
             self.assertLessEqual(len(nodes), 7)
             self.assertTrue({0, 1, 2, 3} <= nodes)
@@ -995,10 +995,10 @@ class StructuralFeaturesTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            trajectory.final_graph.node_index.tolist(), [0, 1, 2]
+            trajectory.prediction_graph.node_index.tolist(), [0, 1, 2]
         )
         self.assertEqual(
-            global_edges(trajectory.final_graph), {(0, 2), (1, 2)}
+            global_edges(trajectory.prediction_graph), {(0, 2), (1, 2)}
         )
 
     def test_structural_parameters_receive_gradients(self):
@@ -1082,7 +1082,9 @@ class BaseAugmentedSamplerTest(unittest.TestCase):
             _graph_signature(static_trajectory.baseline_graph),
         )
         self.assertIs(trajectory.prediction_graph, trajectory.reference_graph)
-        self.assertIs(trajectory.final_graph, trajectory.baseline_graph)
+        self.assertEqual(
+            _graph_signature(trajectory.baseline_graph), ([0, 1], (), [0, 1])
+        )
 
     def test_additions_stay_in_the_shell_and_never_touch_base_nodes(self):
         # Undirected edges: 0-1 (target), 0-2, 1-3, 2-4, 3-5. The base is

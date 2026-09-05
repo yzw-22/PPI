@@ -49,11 +49,10 @@
 - `G_0` 只包含目标节点和必要的虚拟 proxy，不预先采样安全一跳邻居。
 - 从 `G_0` 的 target/proxy 种子沿安全 adjacency 构造一次 `k_hops` 区域，默认 `k_hops=1`；安全一跳邻居由初始 frontier 提供给后续 action。
 - 后续候选为该区域内的当前 frontier；`max_steps` 只限制动作次数，默认值为 `10`，无 STOP 动作。
-- `SamplingTrajectory.final_graph` 返回最后一步图；若没有动作则返回 `baseline_graph`。
-  `prediction_graph` 是 Predictor 实际使用的图：末步图 → 无步时的
+- `prediction_graph` 是 Predictor 实际使用的图：末步图 → 无步时的
   `reference_graph`（A2 底座）→ `baseline_graph`。
-- `StaticNeighborhoodSampler`（消融用，不可学习，零参数）：`final_graph` =
-  `baseline_graph` = G0 种子（u、v、proxy）的全部安全 `k_hops` 区域诱导子图，
+- `StaticNeighborhoodSampler`（消融用，不可学习，零参数）：`prediction_graph`
+  = `baseline_graph` = G0 种子（u、v、proxy）的全部安全 `k_hops` 区域诱导子图，
   无动作；trainer 的 sampler 更新阶段因此为 no-op，只训练 Predictor。与 RL
   Sampler 共享同一候选空间（`_k_hop_region` + 安全邻接），用于检验 RL 选取
   的作用（static 图是任一 RL 轨迹图的信息上界）。
@@ -61,10 +60,10 @@
   取 `min_size`~`max_size`（恒含 u/v）个节点的诱导子图，无动作；与 RL 同规模
   对比，用于分离"上下文量"与"选取策略"（random-subset 模式由
   `--sampler random-subset` 开启，规模由 `--random-subset-min/max-size` 控制）。
-- `HeuristicSampler`（诊断用，不可学习，零参数）：同预算下按确定性拓扑规则
-  选取——u/v 公共邻居 → 单侧邻接 → 区域其余，层内按安全度数降序、id 升序
-  （`--sampler heuristic`，规模与 random-subset 共用同一组开关）；作为 RL 的
-  行为基准。
+- `HeuristicSampler`（诊断用，不可学习，零参数）：`RandomSubsetSampler` 的
+  子类，仅覆盖预算内节点的选取规则——u/v 公共邻居 → 单侧邻接 → 区域其余，
+  层内按安全度数降序、id 升序（`--sampler heuristic`，规模与 random-subset
+  共用同一组开关）；作为 RL 的行为基准。
 
 ### Action score
 

@@ -198,10 +198,6 @@ def run(args):
         torch.set_float32_matmul_precision("high")
 
     device = torch.device(args.device)
-    use_edge_relations = getattr(args, "use_edge_relations", False)
-    use_sampler_edge_relations = getattr(
-        args, "use_sampler_edge_relations", False
-    )
     graph = PPIGraph(
         args.dataset, args.split, root=args.root, device=device, cache_dir=args.cache_dir
     )
@@ -233,7 +229,7 @@ def run(args):
             hidden_dim=args.hidden_dim,
             max_steps=args.max_steps,
             k_hops=args.k_hops,
-            relation_dim=7 if use_sampler_edge_relations else None,
+            relation_dim=7 if args.use_sampler_edge_relations else None,
             structural_features=args.sampler_structural_features,
             base=args.sampler_base,
             policy=args.sampler_policy,
@@ -277,7 +273,7 @@ def run(args):
         num_layers=args.gnn_layers,
         heads=args.heads,
         dropout=args.dropout,
-        edge_dim=7 if use_edge_relations else None,
+        edge_dim=7 if args.use_edge_relations else None,
         readout=args.readout,
         ppr=ppr_lookup,
     ).to(device)
@@ -290,7 +286,7 @@ def run(args):
     predictor_optimizer = torch.optim.Adam(predictor.parameters(), lr=args.predictor_lr)
     edge_relations = (
         _build_training_edge_relations(graph, full_graph["node_index"])
-        if use_edge_relations or use_sampler_edge_relations else None
+        if args.use_edge_relations or args.use_sampler_edge_relations else None
     )
     trainer = AlternatingTrainer(
         sampler,

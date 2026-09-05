@@ -126,10 +126,6 @@ class SamplingTrajectory:
     reference_graph: SampledGraph | None = None
 
     @property
-    def final_graph(self):
-        return self.steps[-1].graph if self.steps else self.baseline_graph
-
-    @property
     def prediction_graph(self):
         """The graph predictor inputs should use for this trajectory.
 
@@ -712,32 +708,9 @@ class SubgraphSampler(nn.Module):
     @staticmethod
     def _make_graph(selected, graph_edges, target_local, node_index,
                     edge_relations=None):
-        device = node_index.device
-        selected_tensor = torch.tensor(selected, device=device, dtype=torch.long)
-        local = {global_node: i for i, global_node in enumerate(selected)}
-        directed_edges = []
-        ordered_edges = sorted(graph_edges)
-        for source, target in ordered_edges:
-            directed_edges.extend(((local[source], local[target]),
-                                   (local[target], local[source])))
-        if directed_edges:
-            edge_index = torch.tensor(directed_edges, device=device, dtype=torch.long).t()
-        else:
-            edge_index = torch.empty((2, 0), device=device, dtype=torch.long)
-        target_nodes = torch.tensor(
-            [local[int(target_local[0])], local[int(target_local[1])]],
-            device=device,
-            dtype=torch.long,
-        )
-        edge_attr = None
-        if edge_relations is not None:
-            edge_attr = edge_relations.lookup(ordered_edges).repeat_interleave(
-                2, dim=0
-            ).to(device)
-        return SampledGraph(
-            node_index[selected_tensor], selected_tensor, edge_index, target_nodes,
-            edge_attr,
-        )
+        return SubgraphSampler._make_graphs(
+            [(selected, graph_edges)], target_local, node_index, edge_relations
+        )[0]
 
     @staticmethod
     def _make_graphs(snapshots, target_local, node_index, edge_relations=None):
@@ -787,8 +760,8 @@ class StaticNeighborhoodSampler(SubgraphSampler):
     """Non-learnable ablation sampler: G0 plus every safe k-hop neighbor.
 
     Unlike :class:`SubgraphSampler`, no nodes are chosen by a learned policy:
-    the returned trajectory has no steps and its ``final_graph`` (equal to the
-    baseline graph) is the induced safe subgraph on the whole ``k_hops`` region
+    the returned trajectory has no steps and its ``prediction_graph`` (equal
+    to the baseline graph) is the induced safe subgraph on the whole ``k_hops`` region
     of the G0 seeds (``u``, ``v`` and any virtual proxies).  The trainer update
     phase is then a no-op (the trajectory carries no steps) and only the
     predictor is trained, exactly on the static neighborhood graph.
@@ -909,82 +882,36 @@ class RandomSubsetSampler(SubgraphSampler):
             # clamped at zero; a negative slice would keep n-1 candidates
             # instead of none.
             k_extra = max(0, min(target_size - len(selected), len(candidates)))
-            chosen = torch.randperm(len(candidates))[:k_extra].tolist()
-            selected = selected + [candidates[index] for index in chosen]
+            selected = selected + self._choose_additions(
+                candidates, k_extra, u, v, adjacency
+            )
         self._add_real_edges(selected, graph_edges, adjacency)
         graph = self._make_graph(
             selected, graph_edges, target_local, node_index, edge_relations
         )
         return SamplingTrajectory(graph, [])
 
+    def _choose_additions(self, candidates, k_extra, u, v, adjacency):
+        """Return the ``k_extra`` region nodes this sampler adds to the seeds."""
+        chosen = torch.randperm(len(candidates))[:k_extra].tolist()
+        return [candidates[index] for index in chosen]
 
-class HeuristicSampler(SubgraphSampler):
+
+class HeuristicSampler(RandomSubsetSampler):
     """Non-learnable ablation sampler: a hand-crafted same-budget selection.
 
-    Zero parameters and no steps, like :class:`RandomSubsetSampler`, so the
-    trainer only updates the predictor.  The node set is a deterministic,
-    topology-only ranking of the safe ``k_hops`` region: common neighbors of
-    both targets first, then nodes touching exactly one target, then the rest
-    of the region; within each tier nodes are ranked by safe degree
-    (descending) with node-id tie-breaks.  The size budget is identical to
-    :class:`RandomSubsetSampler` (same uniform ``min_size``..``max_size``
-    draw, mandatory seeds always included), so heuristic vs random vs static
-    isolates the value of an informed selection rule at a fixed budget.
+    Identical to :class:`RandomSubsetSampler` (zero parameters, no steps,
+    same uniform ``min_size``..``max_size`` budget draw from the global RNG)
+    except for *which* region nodes fill the budget: a deterministic,
+    topology-only ranking — common neighbors of both targets first, then
+    nodes touching exactly one target, then the rest of the region; within
+    each tier nodes are ranked by safe degree (descending) with node-id
+    tie-breaks.  Heuristic vs random vs static therefore isolates the value
+    of an informed selection rule at a fixed budget.
     """
 
-    def __init__(self, esm_dim=2560, hidden_dim=512, max_steps=10, k_hops=1,
-                 min_size=3, max_size=7):
-        # Deliberately no action-scoring parameters: this sampler is
-        # non-learnable.  ``hidden_dim`` and ``max_steps`` are accepted only to
-        # keep the constructor signature uniform with ``SubgraphSampler`` (the
-        # values are not stored: this sampler never scores actions).
-        if k_hops < 0:
-            raise ValueError("k_hops must be non-negative")
-        if min_size < 2:
-            raise ValueError("min_size must be at least 2")
-        if max_size < min_size:
-            raise ValueError("max_size must be at least min_size")
-        nn.Module.__init__(self)
-        self.esm_dim = esm_dim
-        self.k_hops = k_hops
-        self.min_size = min_size
-        self.max_size = max_size
-
-    def sample(self, node_features, edge_index, target_nodes, node_index=None,
-               training=None, adjacency=None, edge_relations=None):
-        """Return one heuristic trajectory (size drawn from the global RNG).
-
-        The ``training`` flag is ignored: the ranking is deterministic, only
-        the budget draw comes from the global RNG (seeded by the training
-        entry), mirroring :class:`RandomSubsetSampler`.
-        """
-        node_features, edge_index, node_index, target_local = self._prepare_inputs(
-            node_features, edge_index, target_nodes, node_index
-        )
-        adjacency = self._prepare_adjacency(
-            edge_index, target_local, node_features.shape[0], adjacency
-        )
-
-        u, v = target_local.tolist()
-        selected = [u, v]
-        graph_edges = set()
-        self._add_virtual_proxies(
-            selected, graph_edges, adjacency, node_features, target_local
-        )
-        allowed = self._k_hop_region(selected, adjacency, self.k_hops)
-        candidates = sorted(allowed - set(selected))
-        if candidates:
-            target_size = int(torch.randint(self.min_size, self.max_size + 1, ()))
-            # Same clamp as RandomSubsetSampler: mandatory proxies may put
-            # ``len(selected)`` above ``min_size``.
-            k_extra = max(0, min(target_size - len(selected), len(candidates)))
-            ranked = self._rank_candidates(candidates, u, v, adjacency)
-            selected = selected + ranked[:k_extra]
-        self._add_real_edges(selected, graph_edges, adjacency)
-        graph = self._make_graph(
-            selected, graph_edges, target_local, node_index, edge_relations
-        )
-        return SamplingTrajectory(graph, [])
+    def _choose_additions(self, candidates, k_extra, u, v, adjacency):
+        return self._rank_candidates(candidates, u, v, adjacency)[:k_extra]
 
     @staticmethod
     def _rank_candidates(candidates, u, v, adjacency):

@@ -108,7 +108,7 @@ def _trainer_for(trajectory):
 
 
 class PredictorGraphSelectionTest(unittest.TestCase):
-    def test_predictor_update_uses_only_final_graph(self):
+    def test_predictor_update_uses_prediction_graph(self):
         trajectory = SamplingTrajectory(
             baseline_graph=_graph([0, 1]),
             steps=[

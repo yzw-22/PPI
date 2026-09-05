@@ -51,17 +51,13 @@ class PPRLookupTest(unittest.TestCase):
         self.assertNotIn(3, coarse)
         self.assertLessEqual(sum(coarse.values()), 1.0 + 1e-6)
 
-    def test_rows_are_cached_and_gather_fills_misses_with_zero(self):
+    def test_rows_are_cached(self):
         edge_index = torch.tensor([[0, 1], [1, 0]])
         lookup = PPRLookup(edge_index, num_nodes=3, alpha=0.15, eps=1e-8)
 
         first = lookup.get(0)
         second = lookup.get(0)
         self.assertIs(first, second)  # cache hit, no recomputation
-
-        gathered = lookup.gather(0, [1, 2, 2])
-        self.assertEqual(gathered.shape, (3,))
-        self.assertAlmostEqual(float(gathered[0]), first[1], places=6)
 
         with self.assertRaisesRegex(ValueError, "out of range"):
             lookup.get(3)

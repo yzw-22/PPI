@@ -43,7 +43,8 @@
     节点间的全部安全诱导边；
   - 候选限制在距 `G_0` 种子不超过 `k_hops`（默认 1）的安全区域内；`max_steps`
     （默认 10）只限制动作次数，无 STOP 动作；
-  - Predictor 训练与评估均使用 `final_graph`（无动作时即 `G_0`）；
+  - Predictor 训练与评估均使用 `prediction_graph`（末步图；无动作时为 A2
+    静态底座 `reference_graph`，再退回 `G_0`，见 §16）；
   - 默认模式的推理特征只含 ESM embedding 与无标签拓扑；relation-aware 模式
     额外读取 train split 边标签。val/test relation 从不进入关系查询表，且当前
     查询目标边在 edge feature 物化前已删除；
@@ -57,12 +58,13 @@
 
 1. **Sampler 更新**（Predictor 冻结，stochastic 轨迹）：对每条轨迹计算
    `G_0` 与所有 step graph 的 BCE loss，增量奖励 `r_t = L(G_{t-1}) − L(G_t)`
-   （第一步以 `G_0` loss 为前项；无子图大小/Δn 惩罚），按 `G_t = r_t + γG_{t+1}`
+   （第一步以 `G_0` loss 为前项；无子图大小/Δn 惩罚）；`--reward-margin` 改为
+   固定参照图的边际改进（见 §14/§16）。按 `G_t = r_t + γG_{t+1}`
    计算 return-to-go；无学习 baseline，advantage 即 detached RTG，batch 内
    标准化 `Â = (A − mean)/max(std, 1e-8)` 后算
    `L_policy = −Σ log π(a_t|s_t)·stopgrad(Â)` 更新 Sampler。
 2. **Predictor 更新**（Sampler 冻结，greedy 轨迹）：只用每条轨迹的
-   `final_graph` 做 BCE with logits 更新。
+   `prediction_graph` 做 BCE with logits 更新。
 
 动作打分：state/candidate 独立投影，拼接映射回 hidden_dim 并加回投影 state
 （残差）→ `Linear(d→d//2) → LayerNorm → Tanh → Linear(d//2→1)` → softmax；
@@ -119,14 +121,6 @@ pickle 整个 PPIGraph），且 CUDA 下逐样本 `int()` 引入 D2H 同步。
 - 采样区域/候选池随全图度数扩大（STRING 的 hub 目标 1-hop 区域可能很大），
   受 `k_hops`/`max_steps` 约束；训练时间主要由 Sampler 轨迹生成、Sampler 更新
   阶段对多个 step graph 的 Predictor 前向、验证推理构成。
-- 仍有效的优化方向（与 split-local 无关的部分）：P1 缓存归一化 embedding 与
-  candidate 投影、增量维护 selected embedding 均值、减少/合并 Predictor 重复
-  forward；P2 评估 `torch.inference_mode()`、batch size 扫描、Predictor BF16/
-  AMP；P3 STRING 用 CSR tensor 邻接 + tensor frontier（全图下收益更大）。
-  Profiling 需分别统计 sampler_g0_build / sampler_action_score /
-  sampler_graph_build / predictor_baseline / predictor_step_graphs /
-  predictor_update / validation / test_evaluation；CUDA 计时前
-  `torch.cuda.synchronize()`。
 
 ## 6. 历史实验记录（split-local KG 时代，仅作配置起点）
 
@@ -197,7 +191,7 @@ KG 由 split-local 改为全图（提交 `23794a8` 之后）。原始 JSON：
 ### 8.0 ms0（`--max-steps 0`，G0-only）
 
 配置同 §7（`h128/g0.9/20ep`，seed 42/111/123，CPU），仅 `--max-steps 0`：
-轨迹无动作、`final_graph` ≡ `G_0`，Sampler 不更新（`sampler_loss`/`mean_reward`
+轨迹无动作、`prediction_graph` ≡ `G_0`，Sampler 不更新（`sampler_loss`/`mean_reward`
 恒为 0），Predictor 只在 G0 上训练。3 seed 并行（每进程 3 线程，总墙钟 ~87 s）。
 原始 JSON：`/tmp/ppi_ms0_s{42,111,123}.json`。
 
@@ -299,8 +293,6 @@ Predictor。3 seed 并行（每进程 3 线程）。原始 JSON：
   全图 KG 上的最优形态是"全取 1-hop 邻域"，RL 选取与 G0-only 均非最优。
   与 §6 split-local 时代"G0-only 最优（dfs）"不冲突（划分/KG 均不同），但本次
   结果提示：该数据下 RL 选取机制可被静态邻域替代。
-- 若需进一步定位"选取策略"与"上下文大小"的效应，可加"随机选取同等规模子集"
-  对照（后续可选）。
 - 可见性分组计数不变（BS 0 / ES 1078 / NS 460）。
 
 ### 8.3 random-subset 诊断（与 RL 同规模的随机选取，2025-08-25）
@@ -974,7 +966,45 @@ V1b static k2+attention（§15，0.8065/0.5767）、V2 rl 从零+attention
   3 线程×3 路条件不同，秒数不可直接比）；从部署角度底座+增补也不划算。
 - 可见性分组计数不变（BS 0 / ES 1078 / NS 460）。
 
-## 17. 验证
+## 17. V1a 跨 split 确认（SHS27k dfs / random），2026-09-05
+
+### 17.0 配置
+
+当前最优方案（§15 V1a：`--sampler static --k-hops 1 --readout attention`）
+在 SHS27k 的 dfs / random split 上各跑 3 seed（42/111/123），其余同
+`h128/g0.9/20ep` 协议；每 run 2 线程、6 路并行（§16 同款条件）。原始 JSON：
+`/tmp/ppi_v1a_splits/v1sk1_{dfs,random}_s{42,111,123}.json`。
+
+### 17.1 结果表（test 指标，best checkpoint by valMacAUC）
+
+| split | 秒 | valMacAUC | MacAUC | MicAUC | MacF1 | MicF1 | 可见性 |
+|---|---:|---|---|---|---|---|---|
+| dfs | 876±1 | 0.8759±0.0011 | **0.8766±0.0040** | 0.8920±0.0047 | **0.6811±0.0153** | 0.7244±0.0087 | BS 0 / ES 1215 / NS 314 |
+| random | 945±3 | 0.9585±0.0018 | **0.9658±0.0003** | 0.9719±0.0009 | **0.8313±0.0114** | 0.8730±0.0045 | BS 1377 / ES 138 / NS 10 |
+
+（bfs 锚：V1a 0.8105±0.0114 / 0.6158±0.0156，§15。）
+
+### 17.2 dfs 配对 diff（对照 §9 的 mean-pool 历史，逐 seed）
+
+| 对比 | MacAUC | MacF1 | MicF1 |
+|---|---|---|---|
+| attention − static mean-pool（§9） | **+0.0089（3/3）** | +0.0097（2/3） | +0.0055（2/3） |
+| attention − RL ms5（§9） | **+0.0272（3/3）** | **+0.0458（3/3）** | +0.0309（3/3） |
+
+（random split 在全图 KG 时代无历史锚点，无配对对象。）
+
+### 17.3 判读
+
+- **最优配置跨 split 成立**：static k1 + attention 在 dfs 上 0.8766/0.6811，
+  对 mean-pool static 的 MacAUC 3/3 正（+0.009，与 bfs 的 +0.006 方向一致）、
+  对 dfs RL ms5 全面领先（+0.027 MacAUC / +0.046 MacF1，均 3/3）——
+  "上下文量 + 读出"结论不依赖 bfs 划分；
+- **random split 数值主要反映可见性**：BS 占 1377/1525（两端节点均在训练
+  集可见），0.9658/0.8313 属预期高位，仅作健全性记录，不与 bfs/dfs 比较；
+- 速度：attention 开销与 split 无关（dfs 876s / random 945s，≈ mean-pool
+  static 386s 的 2.3 倍，与 §15 的比例一致）。
+
+## 18. 验证
 
 ```bash
 python -m unittest discover -s tests -v    # 101 项

@@ -65,13 +65,6 @@ class PPRLookup:
             self._cache[target] = row
         return row
 
-    def gather(self, target, node_ids):
-        """Return ``[len(node_ids)]`` PPR values of ``target`` (0 for misses)."""
-        row = self.get(target)
-        return torch.tensor(
-            [row.get(int(node), 0.0) for node in node_ids], dtype=torch.float32
-        )
-
     def _push(self, seed):
         """Forward-push approximation of the PPR row of ``seed``.
 

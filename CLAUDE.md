@@ -2,11 +2,11 @@
 
 本项目使用预计算的 ESM-2 蛋白质 embedding 进行 7 类 PPI 多标签预测。模型由全图知识图谱（KG）、REINFORCE 子图 Sampler 和 GAT Predictor 组成。
 
-## 当前结论（截至 docs/README.md §16，2026-09-04）
+## 当前结论（截至 docs/README.md §17，2026-09-05）
 
-- **最优配置**：`--sampler static --k-hops 1 --readout attention`（MacAUC
-  0.8105 / MacF1 0.6158 / MicF1 0.6454，599s）——A1 读出重构（target 锚定
-  LinkAttention + PPR 位置编码）是唯一抬高天花板的改动；
+- **最优配置**：`--sampler static --k-hops 1 --readout attention`（§15 V1a），
+  跨 split 成立——bfs 0.8105/0.6158、dfs 0.8766/0.6811（对 mean-pool static
+  3/3 正，§17）、random 0.9658/0.8313（BS 主导，仅健全性记录）；
 - **RL 选取假设已关闭**：A2（static k1 底座 ∪ RL 增补，margin 参照 = 底座
   预测，docs §16）是 sampler 侧最后一条路径——RL 增补与随机增补不可区分
   （E1−E2 = +0.006 MacAUC，2/3），且任何增补都劣于不加（对 V1a 的 MacF1
