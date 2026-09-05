@@ -16,6 +16,9 @@
   **上下文量 + 读出**主导；
 - **RL 实验默认**：`--reward-margin`（margin 学得动：`mean_final_margin`
   0→0.28 一致上升，诊断免费）；heur 为 sampler 改动的行为基准；
+- **relation-aware Predictor 无增益**：static k1+attention 上注入 train 边
+  relation（V1a-rel）对同环境锚配对 MacAUC −0.0125 / MacF1 −0.0291（均 1/3
+  正，§6.2）——k1 上下文的瓶颈不在边类型编码；
 - 全部已测 sampler 语义：RL 从零 / static / random-subset / heuristic /
   结构特征 P2a / margin 奖励 R1 / attention 读出 V2-V3 / 底座增补 A2。
 

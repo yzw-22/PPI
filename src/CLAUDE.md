@@ -101,6 +101,7 @@ Predictor 更新阶段：
 `--use-edge-relations` 显式开启 Predictor 的 `GATConv(edge_dim=7)`；
 `--use-sampler-edge-relations` 独立开启 RL Sampler relation 打分。两者默认关闭，
 self-loop relation 固定为零，Sampler relation 开关不允许用于非 RL sampler。
+Predictor 侧开关已实测：V1a-rel 对 V1a 配对无增益（docs §6.2）。
 
 ## PPIPredictor
 
